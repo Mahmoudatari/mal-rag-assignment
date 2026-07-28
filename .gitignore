@@ -1,0 +1,11 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.chroma/
+.DS_Store
+
+# deepeval writes cache and run state next to the tests
+.deepeval*
