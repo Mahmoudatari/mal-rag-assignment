@@ -4,8 +4,11 @@ Delegates to the pure `pii` package so the redaction eval can test the logic
 without constructing a graph.
 
 The node's only real job is the boundary: `raw_query` in, `query` out, and every
-node after this one reads `query`. It writes no other key, so there is no path
-by which the unmasked text reaches the router, a prompt, or a trace.
+node after this one reads `query`. It also overwrites `raw_query` with "" in the
+same superstep — state is checkpointed to Postgres per thread, so leaving it in
+place would retain every customer's unredacted message for the session's life.
+Beyond that it writes no other key, so there is no path by which the unmasked
+text reaches the router, a prompt, or a trace.
 
 Confidence scores are dropped here on purpose. `pii.PiiSpan` carries one, but
 `state.PIISpan` is kind and offsets only — state is checkpointed to Postgres and
@@ -54,6 +57,10 @@ def run(state: State) -> dict:
     result = redact_text(state.get("raw_query", ""))
     return {
         **_fresh_turn(),
+        # Discard the raw text in the superstep that masks it: the checkpointer
+        # persists the merged state per thread, and a retained raw_query is raw
+        # PII in Postgres for the life of the session.
+        "raw_query": "",
         "query": result.text,
         "pii_spans": [
             PIISpan(kind=span.kind, start=span.start, end=span.end)

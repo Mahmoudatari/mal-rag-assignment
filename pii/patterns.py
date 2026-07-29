@@ -17,19 +17,25 @@ EMIRATES_ID = "EMIRATES_ID"
 ACCOUNT_NUMBER = "ACCOUNT_NUMBER"
 
 # 784-YYYY-NNNNNNN-C — 15 digits: 784 (UAE ISO country code), birth year, 7
-# random digits, check digit. Separators are conventional, so accept any
-# grouping.
-_EMIRATES_ID_PATTERN = r"\b784[-\s]?\d{4}[-\s]?\d{7}[-\s]?\d\b"
+# random digits, check digit. Separators are conventional — customers type
+# dashes, spaces, dots, slashes and underscores — so accept any grouping.
+_EMIRATES_ID_PATTERN = r"\b784[-\s./_]?\d{4}[-\s./_]?\d{7}[-\s./_]?\d\b"
 
-# Bank-internal account numbers: 9-18 digits, optionally grouped. Deliberately
-# broad — the score starts low and Presidio's context enhancer lifts it when
-# account-ish words appear nearby, which is what separates "my account
-# 1234567890" from a long number that happens to be something else.
+# Bank-internal account numbers: 9+ digits, optionally grouped by any common
+# separator. Deliberately broad — the score starts low and Presidio's context
+# enhancer lifts it when account-ish words appear nearby, which is what
+# separates "my account 1234567890" from a long number that happens to be
+# something else.
 #
 # The lookbehind keeps this off international phone numbers: a leading `+` is a
 # strong phone signal, and without it "+971501234567" matches both recognizers
-# at the same score and the winner comes down to sort order.
-_ACCOUNT_PATTERN = r"(?<![+\d])\b\d[\d\s-]{7,22}\d\b"
+# at the same score and the winner comes down to sort order. No `\b` anchors:
+# they made glued shorthands ("acct1234567890") unmatchable and let a stray
+# trailing letter truncate the match so only part of an identifier was masked —
+# a partial mask leaks the remainder. The lookarounds exclude exactly what the
+# guard is about (digits and `+`) and nothing else. The upper bound is wide so
+# an over-long run masks whole rather than to a 24-character prefix.
+_ACCOUNT_PATTERN = r"(?<![+\d])\d[\d\s./_-]{7,40}\d(?!\d)"
 
 _ACCOUNT_CONTEXT = [
     "account",
@@ -93,6 +99,10 @@ class AccountNumberRecognizer(PatternRecognizer):
         )
 
     def validate_result(self, pattern_text: str) -> bool | None:
-        # Drop grouped runs that are too short or too long to be an account
-        # number once separators are stripped.
-        return None if 9 <= len(digits_only(pattern_text)) <= 18 else False
+        # Runs with too few digits once separators are stripped are grouped
+        # prose (dates, "1 000 000"), not accounts — rejecting them is safe
+        # because nothing identifier-shaped is that short. Too-long runs are
+        # NEVER rejected: Presidio drops a result its validator returns False
+        # for, so rejecting a 20-digit paste would forward the likeliest real
+        # identifier in the message to the LLM unmasked.
+        return None if len(digits_only(pattern_text)) >= 9 else False

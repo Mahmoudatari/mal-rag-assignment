@@ -71,6 +71,8 @@ class Reference(TypedDict):
 class State(TypedDict, total=False):
     # --- turn input ---
     session_id: str
+    # Input only. `redact` overwrites this with "" in the same superstep that
+    # writes the masked `query`, so checkpointed state never retains raw PII.
     raw_query: str
     # The full account number from the request. Like raw_query it is a lookup
     # input, not content: nothing renders it into a prompt, a trace or a

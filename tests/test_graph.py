@@ -366,6 +366,8 @@ def test_raw_pii_reaches_no_provider_and_no_final_state(harness) -> None:
 
     for fake in (state.embed_fake, state.rerank_fake, state.generate_fake):
         assert secret not in repr(fake.calls)
-    assert secret not in repr(result["history"])
-    assert secret not in repr(result["usage_log"])
-    assert secret not in repr(result["pii_spans"]), "spans carry offsets, never the value"
+    # The whole final state — history, usage_log, spans (offsets, never values)
+    # and raw_query itself, which redact overwrites in its own superstep. This
+    # dict is exactly what the checkpointer persists to Postgres per thread.
+    assert result["raw_query"] == "", "redact must discard the raw text it masked"
+    assert secret not in repr(result), "checkpointed state must not retain raw PII"

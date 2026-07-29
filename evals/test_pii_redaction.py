@@ -22,6 +22,9 @@ VALID_EID = "784-1990-1234567-6"
 INVALID_LUHN_EID = "784-1990-1234567-1"
 UAE_IBAN = "AE070331234567890123456"
 ACCOUNT = "1234567890"
+# Mal's own account format, and the reason the brand carve-out is scoped to
+# PERSON rather than applied to every kind — see the branded-name test below.
+MAL_ACCOUNT = "MAL-1001-2200-4417"
 
 
 # --- the core requirement: known PII inputs are masked -------------------
@@ -32,7 +35,18 @@ ACCOUNT = "1234567890"
     [
         (f"My Emirates ID is {VALID_EID}", VALID_EID, "EMIRATES_ID"),
         (f"Emirates ID {VALID_EID.replace('-', '')}", VALID_EID.replace("-", ""), "EMIRATES_ID"),
+        # Separators are whatever the customer typed, not just dashes — the
+        # dot/slash/underscore forms all bypassed detection entirely once.
+        ("My Emirates ID is 784.1990.1234567.6", "784.1990.1234567.6", "EMIRATES_ID"),
+        ("my id is 784/1990/1234567/6", "784/1990/1234567/6", "EMIRATES_ID"),
+        ("my id is 784_1990_1234567_6", "784_1990_1234567_6", "EMIRATES_ID"),
         (f"my account number is {ACCOUNT}", ACCOUNT, "ACCOUNT_NUMBER"),
+        # Longer than 18 digits must mask, not drop: the length validator once
+        # *rejected* out-of-range runs, and a rejected span is a total leak.
+        ("my account is 1234 5678 9012 3456 7890", "1234 5678 9012 3456 7890", "ACCOUNT_NUMBER"),
+        ("my account is 9876543210987654321", "9876543210987654321", "ACCOUNT_NUMBER"),
+        # Glued to a shorthand prefix — `\b` anchors once made this unmatchable.
+        ("acct1234567890 please", "1234567890", "ACCOUNT_NUMBER"),
         (f"transfer from {UAE_IBAN} today", UAE_IBAN, "IBAN_CODE"),
         ("reach me at fatima@example.ae", "fatima@example.ae", "EMAIL_ADDRESS"),
         ("call me on +971501234567", "+971501234567", "PHONE_NUMBER"),
@@ -59,13 +73,28 @@ def test_multiple_identifiers_in_one_message() -> None:
     assert {"PERSON", EMIRATES_ID, ACCOUNT_NUMBER, "EMAIL_ADDRESS"} <= result.kinds
 
 
-def test_no_digit_run_from_an_identifier_survives() -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Emirates ID {VALID_EID}, account {ACCOUNT}",
+        # A trailing letter once truncated the match: the Emirates recognizer's
+        # final \b failed on the "x", the account recognizer took the first 14
+        # digits, and the identifier's check digit went to the model in clear.
+        f"my emirates id is {VALID_EID}x",
+        "acct1234567890",
+        # 25 digits: longer than any single pattern's old upper bound — must
+        # mask whole, not to a prefix.
+        "ref 12345 67890 12345 67890 12345",
+    ],
+)
+def test_no_digit_run_from_an_identifier_survives(text: str) -> None:
     """A partially-masked identifier is still a leak.
 
-    Guards the overlap resolution: EMIRATES_ID and ACCOUNT_NUMBER both match a
-    15-digit run, and resolving that badly can mask one half and emit the other.
+    Guards the overlap resolution and the match boundaries: EMIRATES_ID and
+    ACCOUNT_NUMBER both match a 15-digit run, and resolving or anchoring that
+    badly can mask one part and emit the other.
     """
-    result = redact(f"Emirates ID {VALID_EID}, account {ACCOUNT}")
+    result = redact(text)
     digits_left = "".join(c for c in result.text if c.isdigit())
     assert digits_left == ""
 
@@ -159,6 +188,119 @@ def test_clean_finance_questions_are_untouched(text: str) -> None:
     assert not result.found_pii
 
 
+# Branded product names are the expensive false positive: spaCy reads
+# "Mal Digital Wakala" as a PERSON at 0.85, and did it *intermittently* — bare
+# and in most sentences, but not in "What is Mal Everyday Murabaha?". A live
+# turn came through as "[PERSON] savings" and the answer opened by apologising
+# for not being able to see "[PERSON]'s account details". Both the bare and
+# in-sentence forms are pinned, because the bug was that the two disagreed.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Mal Digital Wakala",
+        "Mal Everyday Murabaha",
+        "Mal Ijara Muntahia Bittamleek",
+        "Mal Takaful Family Protection",
+        "Tell me about Mal Digital Wakala savings",
+        "What is Mal Everyday Murabaha?",
+        "How does Mal Ijara Muntahia Bittamleek work?",
+        "Does Mal Digital Wakala pay profit?",
+        "Compare Mal Digital Wakala and Mal Everyday Murabaha",
+    ],
+)
+def test_branded_product_names_are_not_masked(text: str) -> None:
+    result = redact(text)
+    assert result.text == text, "the bank's own product name was read as a customer"
+    assert not result.found_pii
+
+
+@pytest.mark.parametrize(
+    ("text", "name", "product"),
+    [
+        (
+            "I am Ahmed Hassan and I want Mal Digital Wakala",
+            "Ahmed Hassan",
+            "Mal Digital Wakala",
+        ),
+        (
+            "Ahmed Hassan asked about Mal Everyday Murabaha",
+            "Ahmed Hassan",
+            "Mal Everyday Murabaha",
+        ),
+    ],
+)
+def test_a_real_name_still_masks_beside_a_branded_product(
+    text: str, name: str, product: str
+) -> None:
+    """The carve-out drops one PERSON span, not the entity."""
+    result = redact(text)
+    assert name not in result.text
+    assert "[PERSON]" in result.text
+    assert product in result.text
+    assert result.text.count("[PERSON]") == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Jamal Al Farsi", "Malik Rahman", "Malak Ibrahim"],
+)
+def test_names_merely_containing_mal_are_unaffected(name: str) -> None:
+    """The brand must stand alone as a token, not as a substring."""
+    result = redact(f"my name is {name}")
+    assert name not in result.text
+    assert "[PERSON]" in result.text
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("my full name is Ahmed Mal Hassan", "Ahmed Mal Hassan"),
+        ("I am Mal Ahmed", "Mal Ahmed"),
+        ("Hala Mal Saeed here, what is my balance?", "Hala Mal Saeed"),
+    ],
+)
+def test_a_name_containing_the_brand_token_still_masks(text: str, name: str) -> None:
+    """The carve-out fires only when *every* token is brand vocabulary.
+
+    A contains-"mal" test dropped these spans wholesale — and PERSON has no
+    pattern recognizer behind it, so a dropped span is an unrecoverable leak.
+    """
+    result = redact(text)
+    assert name not in result.text
+    assert "[PERSON]" in result.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        MAL_ACCOUNT,
+        f"My account is {MAL_ACCOUNT}",
+        f"account {MAL_ACCOUNT} balance please",
+        f"Hi I am Sara Ahmed, my account {MAL_ACCOUNT} needs help",
+    ],
+)
+def test_mal_prefixed_account_numbers_still_mask(text: str) -> None:
+    """The carve-out is scoped to PERSON precisely so this keeps working.
+
+    Mal's account ids carry the bank's name, so a blanket contains-"Mal" rule
+    would exempt every one of them. Pattern-based kinds match a format, and a
+    format match is never brand vocabulary.
+    """
+    result = redact(text)
+    assert MAL_ACCOUNT not in result.text
+    assert f"[{ACCOUNT_NUMBER}]" in result.text
+    assert ACCOUNT_NUMBER in result.kinds
+    assert not any(c.isdigit() for c in result.text)
+
+
+def test_a_name_beside_a_mal_account_number_masks_too() -> None:
+    result = redact(f"Hi I am Sara Ahmed, my account {MAL_ACCOUNT} needs help")
+    assert "Sara Ahmed" not in result.text
+    assert {"PERSON", ACCOUNT_NUMBER} <= result.kinds
+
+
 def test_empty_input() -> None:
     result = redact("")
     assert result.text == ""
@@ -194,7 +336,9 @@ def test_detected_spans_never_overlap() -> None:
 # this one. `history` is not here — it is the one key that survives a turn.
 TURN_RESET_KEYS = {
     "search_query",
+    "resolved_query",
     "chunks",
+    "candidate_log",
     "relevant",
     "grader_note",
     "attempts",
@@ -202,7 +346,9 @@ TURN_RESET_KEYS = {
     "references",
     "usage_log",
 }
-NODE_KEYS = {"query", "pii_spans"} | TURN_RESET_KEYS
+# `raw_query` is in the write set on purpose: the node overwrites it with ""
+# so the checkpointed state never retains the unmasked text.
+NODE_KEYS = {"query", "pii_spans", "raw_query"} | TURN_RESET_KEYS
 
 
 def test_node_masks_raw_query_into_query() -> None:
@@ -223,6 +369,7 @@ def test_node_clears_the_previous_turn_but_keeps_history() -> None:
         "raw_query": "and what about Ijara?",
         "search_query": "murabaha profit rate",
         "chunks": [{"chunk_id": "murabaha#001", "doc": "murabaha", "text": "x", "score": 0.9}],
+        "candidate_log": [["murabaha#001", "murabaha#002"]],
         "relevant": True,
         "grader_note": "nothing missing",
         "attempts": 2,
@@ -236,6 +383,7 @@ def test_node_clears_the_previous_turn_but_keeps_history() -> None:
 
     assert out["attempts"] == 0
     assert out["chunks"] == []
+    assert out["candidate_log"] == []
     assert out["references"] == []
     assert out["usage_log"] == []
     assert out["tried_queries"] == []
@@ -250,14 +398,23 @@ def test_reset_lists_are_not_shared_between_turns() -> None:
     first = redact_node.run({"raw_query": "one"})
     second = redact_node.run({"raw_query": "two"})
     assert first["chunks"] is not second["chunks"]
+    assert first["candidate_log"] is not second["candidate_log"]
     assert first["usage_log"] is not second["usage_log"]
 
 
-def test_node_never_writes_raw_query_anywhere() -> None:
+def test_node_discards_raw_query_from_the_merged_state() -> None:
+    """The property that matters is on the *merged* dict, not the partial return.
+
+    The checkpointer persists `{**previous_state, **node_writes}` per thread —
+    asserting on the partial return alone would pass even if raw_query were
+    silently retained, because a partial return never contains it.
+    """
     raw = f"my id is {VALID_EID}"
     out = redact_node.run({"raw_query": raw})
-    assert raw not in repr(out)
-    assert VALID_EID not in repr(out)
+    merged = {"raw_query": raw} | out
+    assert merged["raw_query"] == ""
+    assert raw not in repr(merged)
+    assert VALID_EID not in repr(merged)
 
 
 def test_node_spans_carry_kind_and_offsets_only() -> None:

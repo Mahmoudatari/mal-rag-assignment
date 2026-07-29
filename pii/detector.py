@@ -20,6 +20,7 @@ spaCy's NER is the only defence for PERSON. That is why the pinned model is
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -89,6 +90,49 @@ def _rank(kind: str) -> int:
     return _PRIORITY.index(kind) if kind in _PRIORITY else len(_PRIORITY)
 
 
+# spaCy tags Mal's branded product names as PERSON — "Mal Digital Wakala",
+# "Mal Everyday Murabaha", "Mal Ijara Muntahia Bittamleek" all come back at 0.85
+# — and does it *inconsistently*: "What is Mal Everyday Murabaha?" survives
+# while "Tell me about Mal Digital Wakala savings" becomes "[PERSON] savings".
+# That is worse than a steady false positive, because it is flaky in production:
+# one live turn masked the product, and the answering prompt's account-context
+# rule then opened the reply with an irrelevant "I cannot see [PERSON]'s account
+# details". A PERSON span made up entirely of brand vocabulary is dropped.
+#
+# **Every token must be brand vocabulary, not merely one of them.** A
+# contains-"mal" test drops "Ahmed Mal Hassan" — a customer whose middle name
+# happens to be the bank's token — and PERSON has no pattern recognizer behind
+# it, so a dropped span is an unrecoverable leak, not a lower score. "Mal
+# Digital Wakala" is all brand words and is dropped; any span carrying a word
+# outside the vocabulary stays a PERSON and masks.
+#
+# **Scoped to PERSON on purpose.** Mal's account numbers are literally
+# `MAL-nnnn-nnnn-nnnn`, so a blanket brand rule would unmask them. The
+# pattern-based kinds match a *format*, and a format match is never brand
+# vocabulary — they keep masking whatever their text contains.
+#
+# Whole tokens so real names are untouched: "Jamal", "Malik" and "Malak" never
+# tokenize to a brand word. Lowercased because customers type lowercase.
+#
+# A module constant, not a setting: nothing outside this file has a reason to
+# retune the bank's own vocabulary, and the repo only adds settings that earn it.
+_BRAND_VOCAB = frozenset({
+    "mal",
+    # product-name words spaCy reads as part of a PERSON beside the bank's name
+    "digital", "wakala", "everyday", "murabaha", "ijara", "muntahia",
+    "bittamleek", "takaful", "family", "protection", "sukuk", "savings",
+    # connector inside compound mentions ("Mal Digital Wakala and Mal Everyday
+    # Murabaha" can come back as one span)
+    "and",
+})
+
+
+def _is_brand_vocabulary(text: str) -> bool:
+    # "'s" stripped first so "Mal's Wakala" reads as brand, not as a token "s".
+    tokens = re.findall(r"[a-z]+", text.lower().replace("'s", " "))
+    return bool(tokens) and all(t in _BRAND_VOCAB for t in tokens)
+
+
 def _resolve_overlaps(spans: list[PiiSpan]) -> list[PiiSpan]:
     """Keep the strongest span where two overlap.
 
@@ -138,4 +182,15 @@ def detect(
         score_threshold=threshold,
     )
     spans = [PiiSpan(r.entity_type, r.start, r.end, r.score) for r in results]
+
+    # Drop branded product names (see `_BRAND_VOCAB`) before overlap
+    # resolution, not after: a discarded PERSON span must not go on suppressing
+    # a real identifier that overlaps it. Reading the matched text here keeps
+    # the module's rule intact — it is already in scope, and it still never
+    # leaves.
+    spans = [
+        s
+        for s in spans
+        if not (s.kind == PERSON and _is_brand_vocabulary(text[s.start : s.end]))
+    ]
     return _resolve_overlaps(spans)
