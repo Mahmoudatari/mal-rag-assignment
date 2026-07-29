@@ -31,13 +31,21 @@ Account = dict[str, Any]
 # Masked per the display format the KB documents themselves specify
 # (`MAL-****-****-4417` — wakala doc "Data, Balances and Account Numbers",
 # late-payment doc "Waivers"): all but the last four digits hidden.
+#
+# Contract and lease references are stored display-masked the same way
+# (`MUR-****-0417`): they are unique per-customer identifiers exactly like the
+# account number, and records are rendered verbatim into prompts, so an
+# unmasked reference is an identifier handed to the provider and replayed
+# through history. Unlike the account number the full reference has no lookup
+# role, so the full form simply does not exist anywhere in the codebase —
+# masked by construction, with nothing to leak.
 ACCOUNTS: dict[str, Account] = {
     "MAL-1001-2200-4417": {
         "masked_id": "MAL-****-****-4417",
         "holdings": [
             {
                 "product": "Murabaha everyday finance",
-                "contract_reference": "MUR-2026-0417",
+                "contract_reference": "MUR-****-0417",
                 "status": "active",
                 "tier": "core",
                 "asset": "laptop bought from a Mal partner merchant",
@@ -65,7 +73,7 @@ ACCOUNTS: dict[str, Account] = {
         "holdings": [
             {
                 "product": "Ijara auto lease-to-own",
-                "lease_reference": "IJR-2024-00842",
+                "lease_reference": "IJR-****-00842",
                 "status": "active",
                 "vehicle": "2023 sedan",
                 "acquisition_cost_aed": "96,000.00",
@@ -94,7 +102,7 @@ ACCOUNTS: dict[str, Account] = {
         "holdings": [
             {
                 "product": "Murabaha everyday finance",
-                "contract_reference": "MUR-2025-0091",
+                "contract_reference": "MUR-****-0091",
                 "status": "in arrears",
                 "outstanding_amount_aed": "18,000.00",
                 "monthly_instalment_aed": "1,000.00",

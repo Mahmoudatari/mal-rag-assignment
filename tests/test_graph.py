@@ -310,7 +310,7 @@ def test_account_context_reaches_the_prompts_and_does_not_linger(harness) -> Non
         ],
         verdicts=[_verdict(True), _verdict(True)],
         answers=[
-            "Seven instalments remain on contract MUR-2026-0417, AED 24,500 outstanding [1].",
+            "Seven instalments remain on contract MUR-****-0417, AED 24,500 outstanding [1].",
             "Early settlement is allowed [1].",
         ],
     )
@@ -326,7 +326,7 @@ def test_account_context_reaches_the_prompts_and_does_not_linger(harness) -> Non
     generate_prompt = state.generate_fake.last_call["messages"][-1]["content"]
     assert "Customer account context" in generate_prompt
     assert "MAL-****-****-4417" in generate_prompt
-    assert "MUR-2026-0417" in generate_prompt, "the record's fields, not just its id"
+    assert "MUR-****-0417" in generate_prompt, "the record's fields, not just its id"
     # The full number is a lookup key, not content — same containment the PII
     # test asserts for raw_query.
     for fake in (state.router_fake, state.embed_fake, state.rerank_fake, state.generate_fake):
@@ -344,7 +344,7 @@ def test_account_context_reaches_the_prompts_and_does_not_linger(harness) -> Non
     # history drop is for. The whole message list, not just the last prompt.
     for fake in (state.router_fake, state.generate_fake):
         messages = json.dumps(fake.last_call["messages"])
-        assert "MUR-2026-0417" not in messages, "turn 1's contract id must not replay via history"
+        assert "MUR-****-0417" not in messages, "turn 1's contract id must not replay via history"
         assert "24,500" not in messages
     assert len(second["history"]) == 2, "the conversation restarts, it does not accumulate"
 

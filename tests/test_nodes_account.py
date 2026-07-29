@@ -26,7 +26,7 @@ OTHER_ID = "MAL-2002-3300-8802"
 # What the leak looks like: `generate`'s own answer, restating the record.
 HISTORY = [
     {"role": "user", "content": "how much is left on my contract?"},
-    {"role": "assistant", "content": "Seven instalments remain on contract MUR-2026-0417."},
+    {"role": "assistant", "content": "Seven instalments remain on contract MUR-****-0417."},
 ]
 
 
@@ -43,6 +43,13 @@ def test_the_full_account_number_appears_nowhere_inside_the_record(account_id: s
     """The guarantee prompts and traces lean on: they render the record, and
     the record has nothing to leak — only the key holds the full number."""
     assert account_id not in repr(ACCOUNTS[account_id])
+
+
+def test_no_unmasked_reference_appears_in_any_record() -> None:
+    """Contract and lease references are identifiers like the account number,
+    and the record is rendered verbatim into prompts — so they exist only in
+    display-masked form (`MUR-****-0417`), by construction."""
+    assert not re.search(r"(?:MUR|IJR)-\d", repr(ACCOUNTS))
 
 
 def test_every_holding_names_its_product() -> None:
@@ -175,7 +182,7 @@ def test_a_further_turn_on_the_same_account_keeps_its_history() -> None:
 @pytest.mark.parametrize("account_id", ["", "MAL-9999-9999-9999"])
 def test_dropping_the_account_also_drops_its_history(account_id: str) -> None:
     """A turn that omits the id is exactly the turn the figures would be replayed
-    into: `account` is None, yet the prompt still carries "contract MUR-2026-0417"
+    into: `account` is None, yet the prompt still carries "contract MUR-****-0417"
     from the assistant message. Unknown ids resolve to no context and count too."""
     result = account_node.run(
         {"account_id": account_id, "history_account": KNOWN_MASK, "history": HISTORY}
