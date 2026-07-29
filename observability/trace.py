@@ -76,6 +76,10 @@ class Trace:
     # Entity kinds only (PERSON, EMIRATES_ID, ...) — evidence that redaction
     # ran, with none of what it removed.
     pii_kinds: list[str] = field(default_factory=list)
+    # The masked id from the resolved account record ("MAL-****-****-4417"),
+    # empty when the turn carried no account context. Read from `account`,
+    # never from `account_id` — the record carries no full number to leak.
+    account_id_masked: str = ""
 
     # --- routing -------------------------------------------------------
     route: str = ""  # retrieve | refuse | answer
@@ -150,6 +154,7 @@ class Trace:
             latency_ms=latency_ms,
             masked_query=state.get("query", ""),
             pii_kinds=sorted({span["kind"] for span in state.get("pii_spans") or []}),
+            account_id_masked=str((state.get("account") or {}).get("masked_id", "")),
             route=state.get("route", ""),
             route_reason=state.get("route_reason", ""),
             attempts=state.get("attempts", 0),

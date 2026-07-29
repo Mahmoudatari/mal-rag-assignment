@@ -140,6 +140,61 @@ def test_chunks_present_selects_the_grounded_system_prompt(monkeypatch) -> None:
     assert fake.last_call["messages"][0]["content"] == generate.GROUNDED_SYSTEM
 
 
+def test_grounded_prompt_places_the_account_block_between_passages_and_question(monkeypatch) -> None:
+    llm, fake = fake_client(response("Seven instalments remain."))
+    monkeypatch.setattr(generate, "answer_llm", lambda: llm)
+
+    account = {
+        "masked_id": "MAL-****-****-4417",
+        "holdings": [{"product": "Murabaha everyday finance", "instalments_paid": 5}],
+    }
+    asyncio.run(
+        generate.run(
+            {"query": "how much is left?", "chunks": [chunk(1)], "history": [], "account": account}
+        )
+    )
+
+    user_message = fake.last_call["messages"][-1]["content"]
+    assert "Customer account context" in user_message
+    assert "MAL-****-****-4417" in user_message
+    assert "instalments_paid: 5" in user_message
+    # Order: passages, account, question — the question stays last.
+    assert (
+        user_message.index("passage 1 text")
+        < user_message.index("MAL-****-****-4417")
+        < user_message.index("how much is left?")
+    )
+
+
+def test_ungrounded_prompt_carries_the_account_block_too(monkeypatch) -> None:
+    llm, fake = fake_client(response("Hello! You hold a Murabaha contract with us."))
+    monkeypatch.setattr(generate, "answer_llm", lambda: llm)
+
+    account = {
+        "masked_id": "MAL-****-****-4417",
+        "holdings": [{"product": "Murabaha everyday finance"}],
+    }
+    asyncio.run(generate.run({"query": "hi", "chunks": [], "history": [], "account": account}))
+
+    assert fake.last_call["messages"][0]["content"] == generate.UNGROUNDED_SYSTEM
+    user_message = fake.last_call["messages"][-1]["content"]
+    assert "Customer account context" in user_message
+    assert user_message.rstrip().endswith("hi")
+
+
+def test_no_account_means_no_account_block(monkeypatch) -> None:
+    """None and absent alike — the block must not render an empty shell that
+    invites the model to fill it in."""
+    llm, fake = fake_client(response("An answer [1]."))
+    monkeypatch.setattr(generate, "answer_llm", lambda: llm)
+
+    asyncio.run(
+        generate.run({"query": "q", "chunks": [chunk(1)], "history": [], "account": None})
+    )
+
+    assert "Customer account context" not in fake.last_call["messages"][-1]["content"]
+
+
 def test_history_is_passed_to_the_call(monkeypatch) -> None:
     llm, fake = fake_client(response("An answer [1]."))
     monkeypatch.setattr(generate, "answer_llm", lambda: llm)

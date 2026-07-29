@@ -6,6 +6,7 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	redact(redact)
+	account(account)
 	router(router)
 	retrieve(retrieve)
 	rerank(rerank)
@@ -16,10 +17,11 @@ graph TD;
 	no_answer(no_answer)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> redact;
+	account --> router;
 	grade -.-> generate;
 	grade -.-> no_answer;
 	grade -.-> reformulate;
-	redact --> router;
+	redact --> account;
 	reformulate --> retrieve;
 	rerank --> grade;
 	retrieve --> rerank;

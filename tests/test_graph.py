@@ -124,6 +124,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
             lambda: RerankClient("cohere", "rr", api_key="t", async_client=rerank_fake),
         )
 
+        state.router_fake = router_fake
         state.embed_fake = embed_fake
         state.rerank_fake = rerank_fake
         state.generate_fake = generate_fake
@@ -132,15 +133,19 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     return build
 
 
-def _run(compiled, message: str, thread: str = "t1") -> dict:
-    """One turn. `ainvoke` because six of the nine nodes are coroutines.
+def _run(compiled, message: str, thread: str = "t1", account_id: str = "") -> dict:
+    """One turn. `ainvoke` because six of the ten nodes are coroutines.
 
     Each call gets its own loop, which the checkpointer and the fakes are both
     indifferent to — the state that crosses turns is a plain dict in
-    `InMemorySaver`, not a connection bound to a loop.
+    `InMemorySaver`, not a connection bound to a loop. `account_id` is always
+    in the payload ("" when absent), mirroring what `app/` sends.
     """
     return asyncio.run(
-        compiled.ainvoke({"raw_query": message}, config={"configurable": {"thread_id": thread}})
+        compiled.ainvoke(
+            {"raw_query": message, "account_id": account_id},
+            config={"configurable": {"thread_id": thread}},
+        )
     )
 
 
@@ -271,6 +276,65 @@ def test_answer_route_generates_without_context(harness) -> None:
     assert state.searches == []
     system_prompt = state.generate_fake.last_call["messages"][0]["content"]
     assert system_prompt == generate.UNGROUNDED_SYSTEM, "no chunks means the ungrounded prompt"
+
+
+# --- account context ---------------------------------------------------------
+
+
+def test_account_context_reaches_the_prompts_and_does_not_linger(harness) -> None:
+    """Turn 1 sends an account id: the router sees the product names, generate
+    sees the full masked record, and no provider ever sees the raw number.
+    Turn 2 on the same thread sends none: the account node's unconditional
+    write must clear it — the account-shaped version of the chunks reset.
+
+    Turn 1's answer restates the record on purpose. Clearing `account` alone
+    leaves that sentence in `history`, which both later prompts replay, so the
+    contract id survives the reset that was supposed to remove it — the whole
+    reason the account node scopes history to `history_account`."""
+    state = harness(
+        routes=[
+            _route("retrieve", search_query="murabaha remaining balance"),
+            _route("retrieve", search_query="murabaha early settlement"),
+        ],
+        verdicts=[_verdict(True), _verdict(True)],
+        answers=[
+            "Seven instalments remain on contract MUR-2026-0417, AED 24,500 outstanding [1].",
+            "Early settlement is allowed [1].",
+        ],
+    )
+    compiled = graph_module.build_graph(checkpointer=InMemorySaver())
+
+    raw_id = "MAL-1001-2200-4417"
+    first = _run(compiled, "how much is left on my contract?", account_id=raw_id)
+
+    assert first["outcome"] == "answered"
+    assert first["account"]["masked_id"] == "MAL-****-****-4417"
+    router_prompt = state.router_fake.last_call["messages"][-1]["content"]
+    assert "Murabaha everyday finance, Wakala savings" in router_prompt
+    generate_prompt = state.generate_fake.last_call["messages"][-1]["content"]
+    assert "Customer account context" in generate_prompt
+    assert "MAL-****-****-4417" in generate_prompt
+    assert "MUR-2026-0417" in generate_prompt, "the record's fields, not just its id"
+    # The full number is a lookup key, not content — same containment the PII
+    # test asserts for raw_query.
+    for fake in (state.router_fake, state.embed_fake, state.rerank_fake, state.generate_fake):
+        assert raw_id not in repr(fake.calls)
+
+    second = _run(compiled, "can I settle early?")
+
+    assert second["account"] is None, "turn 2 sent no id — turn 1's account must not survive"
+    assert second["history_account"] == ""
+    assert "account holds" not in state.router_fake.last_call["messages"][-1]["content"]
+    assert "Customer account context" not in state.generate_fake.last_call["messages"][-1]["content"]
+    # The rendered block being gone is not the property — the figures are. Turn
+    # 1's answer restated them and went into history, which the router and
+    # generate are both handed in full, so this is what the account node's
+    # history drop is for. The whole message list, not just the last prompt.
+    for fake in (state.router_fake, state.generate_fake):
+        messages = json.dumps(fake.last_call["messages"])
+        assert "MUR-2026-0417" not in messages, "turn 1's contract id must not replay via history"
+        assert "24,500" not in messages
+    assert len(second["history"]) == 2, "the conversation restarts, it does not accumulate"
 
 
 # --- PII, across the whole graph --------------------------------------------

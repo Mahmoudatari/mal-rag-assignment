@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from core.config import get_settings
 from kb.store import async_pool, database_url
 from rag.nodes import (
+    account,
     generate,
     grade,
     no_answer,
@@ -93,6 +94,7 @@ def build_graph(checkpointer=None):
     g = StateGraph(State)
 
     g.add_node("redact", redact.run)
+    g.add_node("account", account.run)
     g.add_node("router", router.run)
     g.add_node("retrieve", retrieve.run)
     g.add_node("rerank", rerank.run)
@@ -102,8 +104,12 @@ def build_graph(checkpointer=None):
     g.add_node("refuse", refuse.run)
     g.add_node("no_answer", no_answer.run)
 
+    # Redact first, unconditionally — account context joins the state only
+    # after the raw text is already masked, so no path exists on which a prompt
+    # sees both raw PII and account data.
     g.add_edge(START, "redact")
-    g.add_edge("redact", "router")
+    g.add_edge("redact", "account")
+    g.add_edge("account", "router")
     g.add_conditional_edges("router", after_router, ["retrieve", "refuse", "generate"])
     g.add_edge("retrieve", "rerank")
     g.add_edge("rerank", "grade")

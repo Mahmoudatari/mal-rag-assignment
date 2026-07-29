@@ -65,6 +65,9 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     `session_id` does double duty: it goes into the invoke payload because no
     node writes it and the trace reads it from final state, and it is the
     checkpointer's `thread_id`, which is what carries history across turns.
+    `account_id` rides along the same way — the account node resolves it into
+    the customer's holdings; absent is sent as "" so the node always has the
+    key to read and a turn without an id cannot inherit the previous turn's.
     """
     session_id = payload.session_id or uuid4().hex
     watch = Stopwatch()
@@ -74,7 +77,11 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     state: Mapping[str, Any] = {"session_id": session_id}
     try:
         state = await request.app.state.graph.ainvoke(
-            {"raw_query": payload.message, "session_id": session_id},
+            {
+                "raw_query": payload.message,
+                "session_id": session_id,
+                "account_id": payload.account_id or "",
+            },
             config={"configurable": {"thread_id": session_id}},
         )
     except Exception as exc:

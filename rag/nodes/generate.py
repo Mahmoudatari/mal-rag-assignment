@@ -11,6 +11,7 @@ questions.
 
 import re
 
+from accounts import render as render_account
 from core.llm import answer_llm
 from rag.nodes._common import appended_history, logged, usage_entry
 from rag.state import Chunk, Reference, State
@@ -34,6 +35,14 @@ The question may contain masked placeholders like [ACCOUNT_NUMBER] or [PERSON] \
 — these stand in for the customer's own identifiers, redacted before reaching \
 you. Leave any such placeholder exactly as written; never invent a value for it.
 
+A "Customer account context" block may follow the passages: the customer's own \
+Mal records, with the account number already masked. Use it to answer questions \
+about their own contract, balance or payments, and state those facts plainly \
+without [n] markers — citation numbers refer only to the numbered passages. \
+Never invent an account detail the block does not contain. If the question is \
+about the customer's own account and no such block is present, say you cannot \
+see their account details in this conversation and suggest checking the Mal app.
+
 Do not ask the customer a follow-up question — end with the answer, not a prompt \
 for more information."""
 
@@ -54,14 +63,20 @@ eligibility rules or Sharia rulings. Anything like that requires retrieved \
 context you do not have here — if the customer is actually asking about product \
 facts, say you'd need to look that up rather than answering from memory.
 
+A "Customer account context" block may be included — the customer's own Mal \
+records. You may mention what they hold when greeting them or explaining what \
+you can help with, but everything the block does not state falls under the \
+no-substantive-claims rule above.
+
 Do not cite anything — there is no context to cite. Do not ask the customer a \
 follow-up question."""
 
-_USER_TEMPLATE = """Context passages:
-{passages}
-
-Customer question:
-{query}"""
+# Assembled from parts rather than one template because the middle section is
+# optional: passages, then the account block when one is attached, then the
+# question last — the thing the model should be looking at when it starts.
+_PASSAGES = "Context passages:\n{passages}"
+_ACCOUNT = "Customer account context (the customer's own Mal records):\n{account}"
+_QUESTION = "Customer question:\n{query}"
 
 # The router short-circuits a turn that masked down to nothing to route="answer",
 # which lands here with a blank query. `complete` guards its own blank *reply*,
@@ -119,13 +134,20 @@ async def run(state: State) -> dict:
     query = state.get("query", "")
     chunks = state.get("chunks", [])
     history = state.get("history", [])
+    account = state.get("account")
+    account_block = _ACCOUNT.format(account=render_account(account)) if account else ""
 
     if chunks:
         system = GROUNDED_SYSTEM
-        prompt = _USER_TEMPLATE.format(passages=_render_passages(chunks), query=query)
+        parts = [_PASSAGES.format(passages=_render_passages(chunks))]
+        if account_block:
+            parts.append(account_block)
+        parts.append(_QUESTION.format(query=query))
+        prompt = "\n\n".join(parts)
     else:
         system = UNGROUNDED_SYSTEM
-        prompt = query.strip() or _EMPTY_TURN
+        message = query.strip() or _EMPTY_TURN
+        prompt = f"{account_block}\n\n{message}" if account_block else message
 
     # EmptyCompletionError propagates rather than being papered over: a
     # fabricated apology string here would itself enter history via

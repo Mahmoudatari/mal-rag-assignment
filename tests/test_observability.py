@@ -50,6 +50,21 @@ def test_brief_required_field_survives_to_the_log(name: str) -> None:
     assert name in emitted(Trace())
 
 
+def test_account_context_logs_the_masked_id_and_nothing_else() -> None:
+    """The trace reads `account`, whose record carries no full number — so the
+    masked id is what a turn with account context logs, and a turn without one
+    logs an empty string rather than omitting the field."""
+    with_account = Trace.from_state(
+        {"account": {"masked_id": "MAL-****-****-4417", "holdings": [{"product": "x"}]}},
+        latency_ms=1.0,
+    )
+    assert emitted(with_account)["account_id_masked"] == "MAL-****-****-4417"
+    assert "holdings" not in emitted(with_account)
+
+    without = Trace.from_state({"account": None}, latency_ms=1.0)
+    assert emitted(without)["account_id_masked"] == ""
+
+
 def test_a_full_trace_logs_every_field_it_was_given() -> None:
     trace = Trace(
         session_id="s-1",

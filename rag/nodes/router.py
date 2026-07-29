@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from accounts import product_names
 from core.llm import StructuredOutputError, fast_llm
 from rag.nodes._common import logged, usage_entry
 from rag.state import State
@@ -53,7 +54,10 @@ out of your way to avoid.
 If retrieving, rewrite the customer's current turn into a standalone search
 query using the conversation history to resolve pronouns and ellipsis (e.g.
 "is it halal?" after a Murabaha question becomes "is Murabaha financing
-permissible under Sharia"). Leave search_query empty for every other route."""
+permissible under Sharia"). A line before the message may list the products
+the customer's own account holds — use it the same way, to resolve references
+like "my lease" or "my savings" into the right product's name in the search
+query. Leave search_query empty for every other route."""
 
 
 class RouteDecision(BaseModel):
@@ -91,8 +95,18 @@ async def run(state: State) -> dict:
         }
 
     history = state.get("history", [])
+
+    # One line of account context, not the full record: this call runs on every
+    # request, and product names are all the rewrite needs to resolve "my lease"
+    # — the record's figures belong to `generate`, the only node that answers.
+    prompt = query
+    account = state.get("account")
+    products = ", ".join(product_names(account)) if account else ""
+    if products:
+        prompt = f"(The customer's account holds: {products}.)\n\n{query}"
+
     try:
-        result = await fast_llm().astructured(query, RouteDecision, system=SYSTEM, history=history)
+        result = await fast_llm().astructured(prompt, RouteDecision, system=SYSTEM, history=history)
     except StructuredOutputError:
         # The router is on every request, so a raised exception here kills the
         # turn outright. Failing open to retrieve costs at worst one wasted

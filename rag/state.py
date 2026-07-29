@@ -4,7 +4,7 @@ Deliberately free of LangGraph imports — this is a plain TypedDict so nodes an
 evals can construct state without compiling a graph.
 """
 
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 Route = Literal["retrieve", "refuse", "answer"]
 Outcome = Literal["answered", "refused", "no_answer"]
@@ -72,16 +72,39 @@ class State(TypedDict, total=False):
     # --- turn input ---
     session_id: str
     raw_query: str
+    # The full account number from the request. Like raw_query it is a lookup
+    # input, not content: nothing renders it into a prompt, a trace or a
+    # response — those read the masked fields inside `account` instead.
+    account_id: str
 
     # --- across turns ---
-    # The only key `redact` does not reset. Everything else here is turn-scoped,
-    # and the checkpointer persists this whole dict per thread_id, so without
-    # that reset turn N+1 would inherit turn N's chunks, attempts and citations.
+    # The one key `redact` deliberately leaves alone. Everything else it touches
+    # is turn-scoped, and the checkpointer persists this whole dict per
+    # thread_id, so without that reset turn N+1 would inherit turn N's chunks,
+    # attempts and citations.
     history: list[ChatMessage]
+    # `masked_id` of the account context `history` was built under, "" for none.
+    # History is the one place account-derived *text* outlives the turn that
+    # produced it: `generate` appends its own answer, and that answer restates
+    # whatever the rendered record said — contract reference, balance, arrears.
+    # Clearing `account` does not unsay them, so those figures keep replaying
+    # into every later router and generate prompt under an account that no
+    # longer describes them. The account node compares this against the context
+    # it just resolved and drops `history` when they disagree. Written on every
+    # path like `account`, so it needs no place in redact's reset list.
+    history_account: str
 
     # --- redact ---
     query: str  # PII-masked; every downstream node reads this, never raw_query
     pii_spans: list[PIISpan]
+
+    # --- account ---
+    # `accounts.lookup` result: the customer's synthetic record, or None when
+    # the request carried no id or an unknown one. Not in redact's reset list
+    # because the account node runs on every path and always writes it, so a
+    # turn without an id cannot inherit the previous turn's account from the
+    # checkpointer. Carries `masked_id`, never the full account number.
+    account: dict[str, Any] | None
 
     # --- router ---
     route: Route

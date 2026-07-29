@@ -108,7 +108,7 @@ def test_chat_answers_and_echoes_the_session_id(client: TestClient, graph: StubG
     assert body["session_id"] == "abc123"
 
     payload, config = graph.invocations[0]
-    assert payload == {"raw_query": "what is murabaha?", "session_id": "abc123"}
+    assert payload == {"raw_query": "what is murabaha?", "session_id": "abc123", "account_id": ""}
     assert config["configurable"]["thread_id"] == "abc123"
 
 
@@ -167,7 +167,29 @@ def test_a_graph_crash_returns_a_generic_500_and_still_emits_a_trace(
     assert "RuntimeError: boom" in lines[0]["error"]
 
 
-@pytest.mark.parametrize("payload", [{"message": ""}, {}, {"message": "x", "session_id": ""}])
+def test_account_id_rides_the_invoke_payload(client: TestClient, graph: StubGraph) -> None:
+    """`account_id` follows the `session_id` pattern: no node writes it, so the
+    app puts it in the payload — and always sends the key ("" when absent), so
+    the account node overwrites rather than inherits across turns."""
+    client.post(
+        "/chat",
+        json={"message": "how much is left?", "account_id": "MAL-1001-2200-4417"},
+    )
+
+    payload, _ = graph.invocations[0]
+    assert payload["account_id"] == "MAL-1001-2200-4417"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"message": ""},
+        {},
+        {"message": "x", "session_id": ""},
+        {"message": "x", "account_id": "not-an-account"},
+        {"message": "x", "account_id": "MAL-1-2-3"},
+    ],
+)
 def test_invalid_requests_are_rejected_before_the_graph_runs(
     client: TestClient,
     graph: StubGraph,
