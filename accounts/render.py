@@ -19,6 +19,20 @@ def product_names(account: Mapping[str, Any]) -> list[str]:
     return [h["product"] for h in account.get("holdings", []) if h.get("product")]
 
 
+def field_summary(account: Mapping[str, Any]) -> str:
+    """Each holding's product and field names, one line per holding — no values.
+
+    What the grader sees: its verdict needs "is the asked-about personal fact
+    available downstream", which the field names answer. The figures themselves
+    belong to `generate`, the only node that answers, and leaving them out
+    keeps the every-retrieval grade call small."""
+    lines = []
+    for holding in account.get("holdings", []):
+        fields = ", ".join(key for key in holding if key != "product")
+        lines.append(f"{holding.get('product', 'holding')}: {fields}")
+    return "\n".join(lines)
+
+
 def render(account: Mapping[str, Any]) -> str:
     """The account as a prompt block: masked id, then each holding's fields."""
     lines = [f"Account {account.get('masked_id', '')}"]

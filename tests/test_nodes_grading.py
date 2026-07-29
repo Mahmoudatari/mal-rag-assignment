@@ -141,6 +141,75 @@ def test_scores_never_appear_in_the_grader_prompt(monkeypatch) -> None:
     assert "minimum Sukuk investment" in call_repr
 
 
+# --- grade: account awareness ---------------------------------------------
+
+
+def test_account_field_names_reach_the_prompt_but_values_do_not(monkeypatch) -> None:
+    """The grader judges whether a personal figure is *available downstream*,
+    which field names answer — the figures themselves belong to `generate`.
+    Before the outline existed, "how much is left to pay on my contract" was
+    graded against passages that could never hold the answer and dead-ended at
+    `no_answer` with the record sitting one node away."""
+    llm, fake = fake_client(response(grade_reply(True)))
+    monkeypatch.setattr(grade, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        grade.run(
+            {
+                "query": "how much is left to pay on my Murabaha contract?",
+                "account": {
+                    "masked_id": "MAL-****-****-4417",
+                    "holdings": [
+                        {
+                            "product": "Murabaha everyday finance",
+                            "total_sale_price_aed": "13,080.00",
+                            "monthly_instalment_aed": "1,090.00",
+                            "instalments_paid": 5,
+                        }
+                    ],
+                },
+                "chunks": [
+                    chunk(
+                        "murabaha#004",
+                        "murabaha-everyday-finance",
+                        "The total price is fixed at signing and paid monthly.",
+                    )
+                ],
+            }
+        )
+    )
+
+    call_repr = repr(fake.last_call)
+    assert "Murabaha everyday finance" in call_repr
+    assert "total_sale_price_aed" in call_repr
+    assert "monthly_instalment_aed" in call_repr
+    assert "13,080.00" not in call_repr
+    assert "1,090.00" not in call_repr
+
+
+def test_no_account_block_without_an_account(monkeypatch) -> None:
+    """`account` is None on every anonymous turn — the prompt must not carry an
+    empty record section for the model to read meaning into."""
+    llm, fake = fake_client(response(grade_reply(True)))
+    monkeypatch.setattr(grade, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        grade.run(
+            {
+                "query": "what is the minimum Sukuk investment?",
+                "account": None,
+                "chunks": [
+                    chunk("sukuk#002", "fractional-sukuk-investing", "The minimum is AED 500.")
+                ],
+            }
+        )
+    )
+
+    # The system prompt legitimately describes the optional outline, so the
+    # check keys on the user-block heading — the part only an account adds.
+    assert "account record on file" not in repr(fake.last_call)
+
+
 # --- grade: which question is graded -------------------------------------
 
 

@@ -6,10 +6,18 @@ for the trace and must not influence this verdict.
 
 Emits a note explaining any failure, which `reformulate` uses to steer the rewrite.
 Keep the output small (verdict + short note) — this call is on every retrieval.
+
+Account-aware, like the router and `generate`: a question about the customer's
+own balance or payments asks for figures no KB passage ever holds, so grading
+it against passages alone dead-ends it at `no_answer` while the record that
+answers it sits one node downstream. The grader sees the record's *outline* —
+products and field names, never values — enough to judge availability without
+carrying figures into the every-retrieval call.
 """
 
 from pydantic import BaseModel, Field
 
+from accounts import field_summary
 from core.llm import fast_llm
 from rag.nodes._common import logged, usage_entry
 from rag.state import Chunk, State
@@ -41,23 +49,43 @@ Mark them not relevant only when answering would mean making things up: the \
 passages are about a different product or topic than the question, or they \
 mention the topic without carrying anything the question actually asked about.
 
+A question about a contract the customer already holds — their balance, \
+instalments, dates, status — is graded on whether the passages cover that \
+product or policy, never on whether they contain the customer's personal \
+figures: no knowledge-base passage ever holds those. An outline of the \
+customer's account record (products held and field names, without values) may \
+follow the question; the answering step receives that record in full and \
+states the figures from it, and when there is no outline it tells the customer \
+it cannot see their account details this session — still a real answer, so \
+product-covering passages stay relevant either way. This applies only to facts \
+about existing holdings: whether Mal offers some product, or whether the \
+customer could take one out, is graded by the ordinary rules above, and the \
+outline changes nothing there.
+
 If not relevant, name in one sentence what is missing or what the passages are \
 about instead, written so it can steer a rewritten search query (name the \
 missing term, rate, or procedure — not just "not relevant"). Leave the note \
 empty when the passages are relevant."""
 
-_USER_TEMPLATE = """Customer question:
-{query}
-
-Retrieved passages:
-{passages}"""
+# Assembled from parts like `generate`'s prompt, because the middle section is
+# optional: question, then the record outline when an account is attached, then
+# the passages.
+_QUESTION = "Customer question:\n{query}"
+_ACCOUNT = (
+    "Customer's account record on file (field names only — the answering step "
+    "receives the full record):\n{outline}"
+)
+_PASSAGES = "Retrieved passages:\n{passages}"
 
 
 class Grade(BaseModel):
     relevant: bool = Field(
         description=(
             "True if an answer can be written from these passages — including a "
-            "partial one that covers the substance and admits what is missing. "
+            "partial one that covers the substance and admits what is missing, "
+            "and including a question about a contract the customer already "
+            "holds, whose personal figures come from the account record, not the "
+            "passages (product availability or eligibility never qualifies). "
             "False only if answering would require inventing facts: the passages "
             "are about a different topic, or carry nothing the question asked about."
         )
@@ -105,7 +133,16 @@ async def run(state: State) -> dict:
     # the loop approve its own drift. `query` is the fallback so partial states
     # built by hand in tests and evals still grade against something.
     question = state.get("resolved_query") or state.get("query", "")
-    prompt = _USER_TEMPLATE.format(query=question, passages=_render_passages(chunks))
+
+    # Outline only — `field_summary` renders products and field names, so the
+    # record's figures never enter this prompt. The verdict needs to know the
+    # customer's balance is *available downstream*, not what it is.
+    account = state.get("account")
+    parts = [_QUESTION.format(query=question)]
+    if account:
+        parts.append(_ACCOUNT.format(outline=field_summary(account)))
+    parts.append(_PASSAGES.format(passages=_render_passages(chunks)))
+    prompt = "\n\n".join(parts)
     # StructuredOutputError propagates rather than being caught: a silent wrong
     # verdict here would either drop a real answer into no_answer or, worse,
     # wave through ungrounded context into `generate`. Unlike the router, there

@@ -7,7 +7,7 @@ OpenAI SDK in) does not exist here, and `pii/` set the precedent for pure leaf
 packages.
 """
 
-from accounts.render import product_names, render
+from accounts.render import field_summary, product_names, render
 from accounts.store import ACCOUNTS, Account, lookup
 
-__all__ = ["ACCOUNTS", "Account", "lookup", "product_names", "render"]
+__all__ = ["ACCOUNTS", "Account", "field_summary", "lookup", "product_names", "render"]

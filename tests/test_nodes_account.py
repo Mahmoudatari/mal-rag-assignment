@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from accounts import ACCOUNTS, lookup, product_names, render
+from accounts import ACCOUNTS, field_summary, lookup, product_names, render
 from rag.nodes import account as account_node
 
 KNOWN_ID = "MAL-1001-2200-4417"
@@ -105,6 +105,20 @@ def test_render_carries_the_masked_id_and_every_holding_field() -> None:
 
 def test_product_names_lists_each_holding_once() -> None:
     assert product_names(lookup(KNOWN_ID)) == ["Murabaha everyday finance", "Wakala savings"]
+
+
+def test_field_summary_carries_every_field_name_and_no_value() -> None:
+    """The grader's view of the record: availability without figures."""
+    record = lookup(KNOWN_ID)
+    outline = field_summary(record)
+
+    for holding in record["holdings"]:
+        assert holding["product"] in outline
+        for key, value in holding.items():
+            if key != "product":
+                assert key in outline
+                assert str(value) not in outline
+    assert "MAL-****-****-4417" not in outline
 
 
 # --- the node ---------------------------------------------------------------

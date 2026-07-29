@@ -312,17 +312,81 @@ def test_live_graph_answers_rather_than_dead_ending(question: str) -> None:
 @pytest.mark.live
 @needs_db
 @live
+def test_live_graph_answers_an_account_figure_question_from_the_record() -> None:
+    """The swagger sample request, pinned after it dead-ended live.
+
+    "How much is left to pay" asks for an account fact no KB passage ever
+    holds, so a passages-only grader is *correct* to fail it — and `reformulate`
+    cannot rewrite its way to a chunk containing this customer's balance, so
+    the turn burned both retries and landed at `no_answer` while `generate`,
+    which renders the record and could answer, sat unreached one node away.
+    The account-aware grader passes product-covering passages and leaves the
+    figures to the record."""
+    compiled = build_graph(checkpointer=InMemorySaver())
+    result = on_index(
+        compiled.ainvoke(
+            {
+                "raw_query": "How much is left to pay on my Murabaha contract?",
+                "account_id": "MAL-1001-2200-4417",
+            },
+            config={"configurable": {"thread_id": "live-account-1"}},
+        )
+    )
+
+    assert result["outcome"] == "answered", (
+        f"dead-ended after {result['attempts']} retries: {result.get('grader_note')}"
+    )
+    # The record's contract: 12 instalments of 1,090.00 against a 13,080.00
+    # total, 5 paid. An answer naming none of these figures was written
+    # without reading the record.
+    figures = ("1,090", "13,080", "7,630", "5,450")
+    assert any(fig in result["answer"] for fig in figures), result["answer"]
+
+
+@pytest.mark.live
+@needs_db
+@live
+def test_live_graph_answers_an_account_question_without_an_account() -> None:
+    """The same question with no record attached must still not dead-end.
+
+    `generate`'s grounded prompt owns this case — "say you cannot see their
+    account details in this conversation" — but that instruction was
+    unreachable while the grader failed every account-fact question before
+    `generate` saw it. The honest outcome is an answer that says so, not the
+    support handover for a question Mal's own app answers."""
+    compiled = build_graph(checkpointer=InMemorySaver())
+    result = on_index(
+        compiled.ainvoke(
+            {"raw_query": "How much is left to pay on my Murabaha contract?"},
+            config={"configurable": {"thread_id": "live-account-2"}},
+        )
+    )
+
+    assert result["outcome"] == "answered", (
+        f"dead-ended after {result['attempts']} retries: {result.get('grader_note')}"
+    )
+
+
+@pytest.mark.live
+@needs_db
+@live
 def test_live_graph_hands_over_rather_than_inventing_an_uncovered_answer() -> None:
     """The other direction: a loosened grader must still stop a made-up answer.
 
     A home mortgage is a Mal-shaped question the corpus has no product for, so
     the honest outcome is the support handover — not a confident answer built
-    out of the Murabaha goods-and-travel passages retrieval will return.
+    out of the Murabaha goods-and-travel passages retrieval will return. The
+    record is attached deliberately: an account outline in the grade prompt
+    must not rubber-stamp a question about a product Mal does not offer, and
+    no field in the record covers a mortgage either.
     """
     compiled = build_graph(checkpointer=InMemorySaver())
     result = on_index(
         compiled.ainvoke(
-            {"raw_query": "Can I get a home mortgage from Mal to buy a villa in Dubai?"},
+            {
+                "raw_query": "Can I get a home mortgage from Mal to buy a villa in Dubai?",
+                "account_id": "MAL-1001-2200-4417",
+            },
             config={"configurable": {"thread_id": "live-smoke-5"}},
         )
     )
