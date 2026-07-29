@@ -20,8 +20,7 @@ WORKDIR /app
 # — spaCy's en_core_web_lg is 433MB of it — and must not rebuild when a node
 # changes. --no-dev keeps pytest and deepeval out of production.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 # --no-editable installs the project as a built wheel, so what runs in the
 # container is exactly the `packages` list in pyproject.toml. An editable
@@ -33,8 +32,7 @@ COPY kb kb
 COPY observability observability
 COPY pii pii
 COPY rag rag
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 
 FROM python:3.13-slim-bookworm
