@@ -179,7 +179,11 @@ def test_second_turn_starts_clean_but_keeps_history(harness) -> None:
     second = _run(compiled, "thanks!")
 
     assert second["chunks"] == [], "turn 1's passages must not survive into turn 2"
+    assert second["candidate_log"] == [], "turn 1's candidate ids must not survive either"
     assert second["references"] == []
+    # Inherited, this would have grade and reformulate judging turn 2's
+    # retrieval against turn 1's question.
+    assert second["resolved_query"] == ""
     assert second["attempts"] == 0
     assert _nodes(second) == ["router", "generate"], "usage_log is per turn, not per session"
     assert len(second["history"]) == 4, "history is the one key that carries across turns"
@@ -188,7 +192,7 @@ def test_second_turn_starts_clean_but_keeps_history(harness) -> None:
 
 def test_exhausted_retries_do_not_leak_into_the_next_turn(harness) -> None:
     """Turn 1 burns every retry; turn 2 must still get its own full budget."""
-    harness(
+    h = harness(
         routes=[_route("retrieve", search_query="q1"), _route("retrieve", search_query="q2")],
         verdicts=[_verdict(False, "no rate given"), _verdict(False, "still nothing"),
                   _verdict(False, "nothing"), _verdict(True)],
@@ -198,6 +202,9 @@ def test_exhausted_retries_do_not_leak_into_the_next_turn(harness) -> None:
     first = _run(compiled, "what is the fee?")
     assert first["outcome"] == "no_answer"
     assert first["attempts"] == get_settings().max_retrieval_attempts
+    # One id-list per search: retries append to candidate_log while replacing
+    # `chunks`, so the trace shows every candidate set the loop burned through.
+    assert len(first["candidate_log"]) == len(h.searches)
 
     second = _run(compiled, "and the tenor?")
 
@@ -205,6 +212,7 @@ def test_exhausted_retries_do_not_leak_into_the_next_turn(harness) -> None:
     # meaningful alongside the reset: inherited, it would have started at 2.
     assert second["attempts"] == 0
     assert second["outcome"] == "answered"
+    assert len(second["candidate_log"]) == 1, "turn 2 logs its own single search only"
 
 
 # --- the retry cycle --------------------------------------------------------
@@ -224,6 +232,10 @@ def test_failed_grade_reformulates_and_retries(harness) -> None:
     assert result["attempts"] == 1, "reformulate is the only node that increments this"
     assert len(state.searches) == 2, "the retry must re-run retrieval, not reuse the graded set"
     assert result["tried_queries"] == ["murabaha fee", "murabaha cost-plus profit margin disclosure"]
+    # `search_query` moves with the loop, `resolved_query` does not — the second
+    # grade judged the retry against the customer's question, not the rewrite.
+    assert result["search_query"] == "murabaha cost-plus profit margin disclosure"
+    assert result["resolved_query"] == "murabaha fee"
     assert _nodes(result) == [
         "router", "retrieve", "rerank", "grade", "reformulate", "retrieve", "rerank", "grade", "generate"
     ]

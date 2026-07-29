@@ -34,7 +34,12 @@ def _fresh_turn() -> dict:
     """
     return {
         "search_query": "",
+        # Cleared with the rest: an inherited `resolved_query` would make grade
+        # and reformulate judge turn N+1's retrieval against turn N's question,
+        # which is the exact failure this key exists to prevent.
+        "resolved_query": "",
         "chunks": [],
+        "candidate_log": [],
         "relevant": False,
         "grader_note": "",
         "attempts": 0,

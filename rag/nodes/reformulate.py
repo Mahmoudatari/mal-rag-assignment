@@ -65,8 +65,15 @@ class Rewrite(BaseModel):
 async def run(state: State) -> dict:
     """search_query + grader_note → new search_query, attempts + 1."""
     tried_queries = state.get("tried_queries", [])
+    # "Always keep the subject of the customer's question in the query" is only
+    # obeyable if the question shown has a subject. The raw turn often does not
+    # — "can I use it for a home?" — and a rewrite built from that drifts onto
+    # whichever product the words suggest, silently switching topic mid-loop.
+    # The router's resolved question carries the subject and, unlike
+    # `search_query`, does not change under us on each retry. `query` remains
+    # the fallback for hand-built states in tests and evals.
     prompt = _USER_TEMPLATE.format(
-        query=state.get("query", ""),
+        query=state.get("resolved_query") or state.get("query", ""),
         search_query=state.get("search_query", ""),
         grader_note=state.get("grader_note", ""),
         tried_queries="\n".join(tried_queries) if tried_queries else "(none)",

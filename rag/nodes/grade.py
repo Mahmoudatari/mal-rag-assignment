@@ -97,9 +97,15 @@ async def run(state: State) -> dict:
             "grader_note": "no passages were retrieved for this question",
         }
 
-    prompt = _USER_TEMPLATE.format(
-        query=state.get("query", ""), passages=_render_passages(chunks)
-    )
+    # The router's resolved question, not the raw turn: an elliptical turn ("can
+    # I use it for a home?") names no subject, so grading it against passages
+    # about the product the customer actually meant reads as a topic mismatch.
+    # Never `search_query` — after a reformulate that holds the loop's own
+    # rewrite, and grading a retrieval against the query that produced it lets
+    # the loop approve its own drift. `query` is the fallback so partial states
+    # built by hand in tests and evals still grade against something.
+    question = state.get("resolved_query") or state.get("query", "")
+    prompt = _USER_TEMPLATE.format(query=question, passages=_render_passages(chunks))
     # StructuredOutputError propagates rather than being caught: a silent wrong
     # verdict here would either drop a real answer into no_answer or, worse,
     # wave through ungrounded context into `generate`. Unlike the router, there

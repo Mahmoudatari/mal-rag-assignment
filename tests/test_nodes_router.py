@@ -45,7 +45,13 @@ def test_retrieve_carries_the_resolved_query_and_seeds_tried_queries(monkeypatch
     assert result["route"] == "retrieve"
     assert result["search_query"] == "is Murabaha financing permissible"
     assert result["tried_queries"] == ["is Murabaha financing permissible"]
-    assert set(result) == {"route", "route_reason", "search_query", "tried_queries", "usage_log"}
+    # Written once here and never by reformulate: `search_query` is what the next
+    # retrieval embeds, `resolved_query` is the question grade and reformulate
+    # keep judging against while the retry loop rewrites the search text.
+    assert result["resolved_query"] == "is Murabaha financing permissible"
+    assert set(result) == {
+        "route", "route_reason", "search_query", "resolved_query", "tried_queries", "usage_log"
+    }
 
 
 def test_retrieve_falls_back_to_the_raw_query_when_the_rewrite_is_blank(monkeypatch) -> None:
@@ -57,6 +63,8 @@ def test_retrieve_falls_back_to_the_raw_query_when_the_rewrite_is_blank(monkeypa
 
     assert result["search_query"] == "what about Ijara?"
     assert result["tried_queries"] == ["what about Ijara?"]
+    # The copy is taken after the fallback, so the two never disagree.
+    assert result["resolved_query"] == "what about Ijara?"
 
 
 # --- answer / refuse ---------------------------------------------------
@@ -72,7 +80,12 @@ def test_non_retrieve_routes_blank_the_search_query(monkeypatch, route: str) -> 
     assert result["route"] == route
     assert result["search_query"] == ""
     assert result["tried_queries"] == []
-    assert set(result) == {"route", "route_reason", "search_query", "tried_queries", "usage_log"}
+    # `grade` is unreachable on both routes, so there is no question to resolve —
+    # blanked exactly like search_query and tried_queries.
+    assert result["resolved_query"] == ""
+    assert set(result) == {
+        "route", "route_reason", "search_query", "resolved_query", "tried_queries", "usage_log"
+    }
 
 
 # --- history --------------------------------------------------------------
@@ -110,7 +123,8 @@ def test_blank_query_short_circuits_with_no_llm_call(monkeypatch, query: str) ->
     assert result["route"] == "answer"
     assert result["search_query"] == ""
     assert result["tried_queries"] == []
-    assert set(result) == {"route", "route_reason", "search_query", "tried_queries"}
+    assert result["resolved_query"] == ""
+    assert set(result) == {"route", "route_reason", "search_query", "resolved_query", "tried_queries"}
 
 
 # --- fail-open --------------------------------------------------------------
@@ -132,7 +146,10 @@ def test_structured_output_error_fails_open_to_retrieve(monkeypatch) -> None:
     assert result["route"] == "retrieve"
     assert result["search_query"] == "is it halal?"
     assert result["tried_queries"] == ["is it halal?"]
-    assert set(result) == {"route", "route_reason", "search_query", "tried_queries"}
+    # No rewrite happened, so the masked turn is the only standalone question
+    # available — unresolved, but better than leaving grade and reformulate blank.
+    assert result["resolved_query"] == "is it halal?"
+    assert set(result) == {"route", "route_reason", "search_query", "resolved_query", "tried_queries"}
 
 
 # --- usage -------------------------------------------------------------

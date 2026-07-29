@@ -44,4 +44,13 @@ async def run(state: State) -> dict:
     # Replaces rather than appends to any chunks already in state: on a
     # reformulate retry this node runs again with a new search_query, and the
     # previous (failed) candidate set must not linger alongside the new one.
-    return {"chunks": chunks, "usage_log": logged(state, entry)}
+    # `candidate_log` is the exception — one id-list appended per search (the
+    # `logged()` idiom), because the trace and the retrieval eval both want the
+    # first run: the one that measured the router's rewrite of the actual
+    # question. The blank-query return above deliberately appends nothing — no
+    # search ran, and an empty entry would claim one did.
+    return {
+        "chunks": chunks,
+        "candidate_log": [*state.get("candidate_log", []), [c["chunk_id"] for c in chunks]],
+        "usage_log": logged(state, entry),
+    }

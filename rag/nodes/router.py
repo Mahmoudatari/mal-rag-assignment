@@ -81,7 +81,14 @@ class RouteDecision(BaseModel):
 
 
 async def run(state: State) -> dict:
-    """query + history → route, route_reason, search_query, tried_queries, usage_log."""
+    """query + history → route, route_reason, search_query, resolved_query, tried_queries, usage_log.
+
+    `resolved_query` is written here and only here. `search_query` is the text
+    the next retrieval embeds and `reformulate` rewrites it on every retry;
+    `resolved_query` holds the same resolved question unchanged for the whole
+    turn, so `grade` and `reformulate` keep judging the customer's actual
+    question rather than the loop's latest rewrite of it.
+    """
     query = state.get("query", "")
     if not query.strip():
         # A turn that was entirely PII masks down to nothing left to route or
@@ -91,6 +98,7 @@ async def run(state: State) -> dict:
             "route": "answer",
             "route_reason": "empty query after redaction — nothing to route",
             "search_query": "",
+            "resolved_query": "",
             "tried_queries": [],
         }
 
@@ -131,17 +139,23 @@ async def run(state: State) -> dict:
             "route": "retrieve",
             "route_reason": decision.reason,
             "search_query": search_query,
+            # Same text, two lifetimes: this copy is taken after the blank-rewrite
+            # fallback so both start from the resolved question, and nothing
+            # downstream writes it again.
+            "resolved_query": search_query,
             "tried_queries": [search_query],
             "usage_log": logged(state, entry),
         }
 
-    # "answer" and "refuse" never carry a search query or a retry list — only
-    # "retrieve" seeds tried_queries, so a later reformulate has something to
+    # "answer" and "refuse" never carry a search query, a resolved question or a
+    # retry list — `grade` and `reformulate` are unreachable on both paths, and
+    # only "retrieve" seeds tried_queries so a later reformulate has something to
     # append to.
     return {
         "route": decision.route,
         "route_reason": decision.reason,
         "search_query": "",
+        "resolved_query": "",
         "tried_queries": [],
         "usage_log": logged(state, entry),
     }

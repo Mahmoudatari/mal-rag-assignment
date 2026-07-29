@@ -141,6 +141,63 @@ def test_scores_never_appear_in_the_grader_prompt(monkeypatch) -> None:
     assert "minimum Sukuk investment" in call_repr
 
 
+# --- grade: which question is graded -------------------------------------
+
+
+def test_grader_reads_the_resolved_query_not_the_elliptical_turn(monkeypatch) -> None:
+    """The bug this guards: grading an elliptical turn against the passages
+    retrieved for its resolved form. "can I use it for a home?" names no
+    subject, so the grader sees Murabaha passages against a question that could
+    be about anything and reads a topic mismatch — dead-ending an answerable
+    question at `no_answer`."""
+    llm, fake = fake_client(response(grade_reply(True)))
+    monkeypatch.setattr(grade, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        grade.run(
+            {
+                "query": "can I use it for a home?",
+                "resolved_query": "can Mal Everyday Murabaha be used for home financing",
+                # The retry's rewrite must not be what gets graded either — that
+                # would let the loop approve its own drift.
+                "search_query": "Mal Ijara home finance real estate mortgage policy",
+                "chunks": [
+                    chunk(
+                        "murabaha#014",
+                        "murabaha-everyday-finance",
+                        "Murabaha covers goods and travel, not property.",
+                    )
+                ],
+            }
+        )
+    )
+
+    call_repr = repr(fake.last_call)
+    assert "can Mal Everyday Murabaha be used for home financing" in call_repr
+    assert "can I use it for a home?" not in call_repr
+    assert "Mal Ijara home finance" not in call_repr
+
+
+def test_grader_falls_back_to_the_masked_query_without_a_resolved_one(monkeypatch) -> None:
+    """States built by hand in evals — and any turn predating the key — carry
+    `query` alone, which must still be what is graded."""
+    llm, fake = fake_client(response(grade_reply(True)))
+    monkeypatch.setattr(grade, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        grade.run(
+            {
+                "query": "what is the minimum Sukuk investment?",
+                "chunks": [
+                    chunk("sukuk#002", "fractional-sukuk-investing", "The minimum is AED 500.")
+                ],
+            }
+        )
+    )
+
+    assert "what is the minimum Sukuk investment?" in repr(fake.last_call)
+
+
 # --- grade: usage ----------------------------------------------------------
 
 
@@ -279,6 +336,55 @@ def test_prompt_carries_the_grader_note_and_tried_queries(monkeypatch) -> None:
     assert "missing the contribution amount" in call_repr
     assert "Takaful payments" in call_repr
     assert "Takaful cost" in call_repr
+
+
+# --- reformulate: which question it rewrites from ---------------------------
+
+
+def test_rewrite_is_steered_by_the_resolved_query_not_the_elliptical_turn(monkeypatch) -> None:
+    """"Always keep the subject of the customer's question in the query" is only
+    obeyable if the question shown has one. Fed "can I use it for a home?", the
+    rewrite has no product to keep and drifts onto whichever one the words
+    suggest — live, that turned a Murabaha turn into an Ijara mortgage search by
+    the second retry."""
+    llm, fake = fake_client(response(rewrite_reply("Murabaha property purchase eligibility")))
+    monkeypatch.setattr(reformulate, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        reformulate.run(
+            {
+                "query": "can I use it for a home?",
+                "resolved_query": "can Mal Everyday Murabaha be used for home financing",
+                "search_query": "Murabaha home purchase",
+                "grader_note": "the passages cover goods and travel, not property",
+                "tried_queries": ["Murabaha home purchase"],
+            }
+        )
+    )
+
+    call_repr = repr(fake.last_call)
+    assert "can Mal Everyday Murabaha be used for home financing" in call_repr
+    assert "can I use it for a home?" not in call_repr
+    # The tried query still reaches the prompt — it fills a different field.
+    assert "Murabaha home purchase" in call_repr
+
+
+def test_rewrite_falls_back_to_the_masked_query_without_a_resolved_one(monkeypatch) -> None:
+    llm, fake = fake_client(response(rewrite_reply("Wakala agency fee structure")))
+    monkeypatch.setattr(reformulate, "fast_llm", lambda: llm)
+
+    asyncio.run(
+        reformulate.run(
+            {
+                "query": "how much does Wakala cost?",
+                "search_query": "Wakala cost",
+                "grader_note": "missing the fee",
+                "tried_queries": ["Wakala cost"],
+            }
+        )
+    )
+
+    assert "how much does Wakala cost?" in repr(fake.last_call)
 
 
 # --- reformulate: blank rewrite fallback ------------------------------------

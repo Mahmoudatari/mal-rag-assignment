@@ -110,9 +110,23 @@ class State(TypedDict, total=False):
     route: Route
     route_reason: str
     search_query: str  # history-resolved; empty unless route == "retrieve"
+    # The router's history-resolved standalone question ("can I use it for a
+    # home?" → "can Mal Everyday Murabaha be used for home financing"), written
+    # once per turn by the router and never overwritten by reformulate. This is
+    # the stable question `grade` and `reformulate` work against, while
+    # `search_query` mutates on every retry: grading against the rewrite would
+    # let the retry loop approve its own drift, and rewriting from the raw turn
+    # loses the subject the pronoun stood for.
+    resolved_query: str
 
     # --- retrieve / grade ---
     chunks: list[Chunk]  # empty on the no-retrieval path; generate handles that
+    # Chunk ids per retrieval run, pre-rerank — one inner list per search, so a
+    # reformulate retry appends rather than overwrites (unlike `chunks`, which a
+    # retry must replace). Ids only: the checkpointer serializes this dict per
+    # thread, and 20 full texts per run is ~30KB of bloat with no reader. Like
+    # `score` and `rerank_score`: trace/eval data, never gates control flow.
+    candidate_log: list[list[str]]
     relevant: bool
     grader_note: str  # why retrieval failed; feeds reformulate
     attempts: int  # incremented ONLY in reformulate

@@ -163,7 +163,10 @@ def test_a_blank_query_returns_empty_chunks_with_no_calls(
 
 def test_returned_chunks_replace_rather_than_accumulate(monkeypatch: pytest.MonkeyPatch) -> None:
     """On a reformulate retry this node re-runs with a new search_query — the
-    stale candidate set from the failed attempt must not linger alongside it."""
+    stale candidate set from the failed attempt must not linger alongside it.
+
+    `candidate_log` is the deliberate exception: one id-list appended per
+    search, so the trace and the retrieval eval keep the first run."""
     client, _ = _embedding_client()
     monkeypatch.setattr(retrieve, "embedding_client", lambda: client)
     monkeypatch.setattr(retrieve, "get_settings", lambda: Settings())
@@ -180,9 +183,17 @@ def test_returned_chunks_replace_rather_than_accumulate(monkeypatch: pytest.Monk
     monkeypatch.setattr(retrieve, "asearch", fake_asearch)
 
     stale = Chunk(chunk_id="murabaha-everyday-finance#001", doc="murabaha-everyday-finance", text="stale", score=0.99)
-    result = asyncio.run(retrieve.run(State(query="q", chunks=[stale])))
+    result = asyncio.run(
+        retrieve.run(
+            State(query="q", chunks=[stale], candidate_log=[["murabaha-everyday-finance#001"]])
+        )
+    )
 
     assert [c["chunk_id"] for c in result["chunks"]] == ["ijara-vehicle-finance#002"]
+    assert result["candidate_log"] == [
+        ["murabaha-everyday-finance#001"],
+        ["ijara-vehicle-finance#002"],
+    ]
 
 
 def test_retrieve_usage_entry(monkeypatch: pytest.MonkeyPatch) -> None:
