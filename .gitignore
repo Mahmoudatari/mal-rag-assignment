@@ -9,3 +9,6 @@ __pycache__/
 
 # deepeval writes cache and run state next to the tests
 .deepeval*
+
+# working notes from review sessions — regenerated, not a deliverable
+findings.md

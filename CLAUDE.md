@@ -16,6 +16,7 @@ app/              FastAPI — routes, schemas, session id
 kb/               documents/ + chunking + ingest.py + store.py + schema.sql   (build-time)
 rag/              LangGraph graph, state, nodes/                              (request-time)
 pii/              detector + masker + patterns — pure, no network or secrets
+accounts/         synthetic customer records + prompt renderer — pure, like pii/
 observability/    trace schema + JSON emitter — leaf, imports nothing internal
 tests/            unit tests per module        (not shipped)
 evals/            the 3 required tests         (not shipped)
@@ -30,7 +31,7 @@ means adding it to that list.
 Boundaries follow dependency profile, not tidiness:
 - `core/` is imported by `app/`, `kb/`, `rag/` and `pii/`, and imports none of them back. That direction is the entry test, not "shared-ish" — a module that needs one of those is not core.
 - **`core/__init__.py` deliberately re-exports nothing.** A convenience `from core import get_settings` would make importing settings drag `openai` in behind it, and `pii/` reads settings while having to stay importable with no key and no network. Import the module: `from core.config import get_settings`.
-- `pii/` must stay importable without an API key or a database, so its eval runs standalone in CI.
+- `pii/` must stay importable without an API key or a database, so its eval runs standalone in CI. The detector drops PERSON spans made up **entirely** of brand vocabulary: spaCy tags branded product names — "Mal Digital Wakala", "Mal Everyday Murabaha" — as PERSON, intermittently by context. Every token must be in the vocabulary, not merely one of them — a contains-"Mal" test drops "Ahmed Mal Hassan", and PERSON has no pattern recognizer behind it, so a dropped span is an unrecoverable leak rather than a lower score. Scoped to PERSON only, because account numbers are literally `MAL-nnnn-nnnn-nnnn`; pattern-matched kinds mask regardless of content.
 - **`observability/` is imported by `app/` alone** — not by `rag/`, and it imports nothing internal at all, not even `core`. It was going to be a shared import until `usage_log` (see **State**) made nodes record into state rather than call a tracer, so the whole trace is now assembled at the edge from final state. `Trace.from_state` takes a `Mapping`, not `rag.state.State`: a TypedDict is a `dict` at runtime, so the schema is honoured with no import and no cycle. The price is a coupling by key name that no type checker sees, so a test ast-scans the `state.get("…")` literals against `State.__annotations__` — otherwise a renamed state key leaves a trace field silently reading its default.
 - `core/llm.py` and `core/embeddings.py` are shared rather than owned by a caller because both `rag/` (request-time) and `kb/` (build-time embeddings) call OpenRouter — putting either inside one would make the other import across the boundary. They hold no prompts; those belong to the node that owns them.
 - They are two modules, not one class, because the calls have different shapes — embeddings have no messages, system prompt, schema or temperature, but do have a dimension contract and batching. `core/embeddings.py` imports `Model`, `Usage` and the pooled transport from `core/llm.py` rather than duplicating them, so one trace can total tokens and cost across chat and embedding calls.
@@ -67,6 +68,9 @@ provider is marked `live` and deselected by default via `addopts`.
 
 ```
 redact        PII → masked. Pure, always first. Everything downstream reads state["query"].
+account       account_id → the customer's synthetic record from accounts/, or None.
+              Pure lookup, always writes — a skipped write would let the
+              checkpointer carry last turn's account into a turn that sent no id.
 router        ONE structured call, routes only — never answers:
               scope check + retrieval decision + history-resolved query
               → retrieve | refuse | answer
@@ -79,12 +83,15 @@ refuse        terminal: "I can only answer Islamic finance / account questions"
 no_answer     terminal: not in the KB → point at support (obviously-fake contact details)
 ```
 
-Edges: `router` → retrieve | refuse | generate · `retrieve` → rerank → grade · `grade` → generate (relevant) | reformulate (retries left) | no_answer (exhausted) · `reformulate` → retrieve.
+Edges: `redact` → `account` → `router` · `router` → retrieve | refuse | generate · `retrieve` → rerank → grade · `grade` → generate (relevant) | reformulate (retries left) | no_answer (exhausted) · `reformulate` → retrieve.
+
+- **Account context is a node, not app-side injection.** `POST /chat` takes an optional `account_id` (`MAL-nnnn-nnnn-nnnn`, validated at the edge); the app puts it in the invoke payload — always, `""` when absent — and the `account` node resolves it against `accounts/`, a pure synthetic store. The record holds *customer* facts only (contract figures, balances, arrears), never product rules — those live in the KB, and duplicating them is how a record contradicts the passage beside it in one prompt. Figures reuse the KB documents' own worked examples so combined answers stay arithmetically consistent. The full account number exists only as the store's dict key: records carry `masked_id`, so prompts, traces and responses cannot leak the number by construction. `generate` renders the whole record (facts stated without `[n]` — citations are for passages); the router gets one line of product names to resolve "my lease"; an unknown id is `account: None`, not a 404 — an unauthenticated endpoint should not confirm an account exists.
 
 - **The router routes, it does not answer.** Folding generation in would save a call only on the cheapest path while making the hottest call carry generation instructions every request.
 - **No separate `direct` node.** `generate` takes retrieved context as a parameter and receives an empty list on the no-retrieval path. When `chunks` is empty the prompt must forbid substantive finance claims — that path is the main hallucination surface, since nothing grounds it.
 - Router bias: when uncertain prefer `retrieve` over `refuse` — a false refusal stonewalls a real customer question, a false retrieve is caught by the grader. **`refuse` is narrower than it first reads, and this was measured rather than assumed:** the first live run refused "how do I dispute a fraudulent card transaction on my Mal account?", "can I get a home mortgage from Mal?" and an FX-rate question — all Mal banking, none of them one of the six KB topics. A customer with a real problem was told it was not this assistant's business. Anything about the customer's account or Mal's services routes to `retrieve`; if the KB does not cover it the grader says so and `no_answer` hands over to support, which is a real answer. `refuse` is for turns with nothing to do with Islamic finance or Mal at all — trivia, chit-chat, "write me a Python script". Pinned by live tests.
 - Citations are inline `[n]` markers plus a structured `references` list (`{n, doc, chunk_id}`). No markdown anchors — there is no frontend to render them. Keep the display-index → chunk_id mapping in state so traces log real chunk IDs.
+- **History stores answers with the `[n]` markers stripped** (the response keeps them). Markers number *this* turn's passages; replayed into the next turn's prompt they sit beside renumbered passages, and a restated fact carrying its stale marker gets resolved against the new chunk list — measured live: a Sukuk figure cited to a Wakala chunk containing neither the number nor the product. Nothing raises, and the trace logs the wrong chunk as genuinely cited.
 - **No follow-up questions** in answers (dropped: ungrounded text inside a grounded answer complicates the grounding eval).
 - **Relevance is decided by the LLM grader alone — there is no cosine threshold and no score gate.** A numeric cutoff was considered and rejected: cosine thresholds don't transfer across embedding models and would need recalibrating whenever one changes. There is deliberately no `relevance_threshold` setting.
 - Cosine similarity is still computed and carried on each chunk, because "relevance score" is a required **trace** field. It is observability only and must never influence control flow. Log top-1 similarity as the numeric score alongside the grader's verdict.
@@ -99,7 +106,9 @@ One state object: `rag/state.py` is a plain TypedDict with no LangGraph imports.
 - No reducer annotations. Default last-write-wins is correct here: a retry must *replace* `chunks`, not append to the stale set. If accumulation is ever needed, use `operator.add` before reaching for `add_messages`.
 - `attempts` is incremented in `reformulate` and nowhere else. Split increments are how these loops go infinite.
 - `pii_spans` stores kind and offsets only — never the matched values.
-- **`redact` resets the turn-scoped keys, because partial writes plus a checkpointer means turn N+1 starts from turn N's dict.** Nothing else clears them, and the two failures are silent: a conversational second turn reaches `generate` still carrying the first turn's `chunks` and is answered as if grounded — the ungrounded path is the main hallucination surface — and a turn following an exhausted retrieval starts at `attempts == 2` and gets no retries at all. It resets `search_query`, `chunks`, `relevant`, `grader_note`, `attempts`, `tried_queries`, `references`, `usage_log`, and builds those lists per call so no two turns share one. `route`, `answer` and `outcome` are excluded on purpose: every path writes them. Tested in `tests/test_graph.py`, which is the only place a two-turn property is visible.
+- **`resolved_query` is the router's history-resolved standalone question, written once per turn and never touched by `reformulate`.** It is what `grade` and `reformulate` judge against while `search_query` mutates per retry. Pointing them at `search_query` instead would let the retry loop grade its own rewrites — measured live before the split: on the follow-up "can I use it for a home?" (no subject in the raw turn), rewrite 2 had silently switched product from Murabaha to Ijara. Pointing them at `query` is the original bug: the raw turn's pronoun is unresolved and neither node gets history.
+- **`redact` resets the turn-scoped keys, because partial writes plus a checkpointer means turn N+1 starts from turn N's dict.** Nothing else clears them, and the two failures are silent: a conversational second turn reaches `generate` still carrying the first turn's `chunks` and is answered as if grounded — the ungrounded path is the main hallucination surface — and a turn following an exhausted retrieval starts at `attempts == 2` and gets no retries at all. It resets `search_query`, `resolved_query`, `chunks`, `candidate_log`, `relevant`, `grader_note`, `attempts`, `tried_queries`, `references`, `usage_log`, and builds those lists per call so no two turns share one. `route`, `answer` and `outcome` are excluded on purpose: every path writes them. Tested in `tests/test_graph.py`, which is the only place a two-turn property is visible.
+- **`account_id` and `account` stay out of `redact`'s reset list on purpose.** The id is in every invoke payload (`""` when the request had none) and the account node writes `account` on every path, None included — always-written keys need no reset, and adding them would be a second mechanism doing the same job. `account_id` is a lookup input like `raw_query`: nothing renders it into a prompt, trace or response; those read the record's `masked_id`.
 - **`history` is the one key that survives a turn** — plain `{role, content}` dicts, masked text only, capped at `history_max_messages`. It lives in state rather than beside it because the checkpointer persists exactly this dict per `thread_id`; a second store would be a second thing to keep in sync. Appended by the three terminal nodes, read by `router` (to resolve "is it halal?" into a standalone `search_query`) and `generate`.
 - **`usage_log` carries the trace's cost data as plain JSON, appended by whichever node made the call.** Nodes record into state instead of importing a tracer, which keeps `rag/` from depending on `observability/` and keeps the totals correct across a retry loop — a retry appends a second `retrieve` entry rather than overwriting the first. Rerank entries carry `search_units`, since `cohere/rerank-v3.5` reports zero tokens and bills on units alone.
 
@@ -295,9 +304,9 @@ Verify against the docs before writing wiring code, and re-verify if a compile o
 
 ## Open items
 
-See `TASKS.md` for the session-by-session build plan and dependencies.
-
-- **Account context** — the brief requires answering against the customer's own account data. Not yet in the graph; decide node vs. injected into state from the request.
+See `TASKS.md` for the session-by-session build plan and dependencies. Account
+context is resolved (see **Graph**): a dedicated `account` node between
+`redact` and `router`, fed by an optional `account_id` request field.
 
 ## Decisions
 

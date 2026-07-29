@@ -2,7 +2,7 @@
 
 One session each. Read `CLAUDE.md` first — it holds the settled design decisions and the reasoning behind them.
 
-Status: tasks 1–6 done. The API serves `/chat` and `/health` on a fully async request path; next is task 7 (evals), then deploy. Account context (see Open decision) is still open and was deliberately not folded into task 6.
+Status: tasks 1–6 done, plus account context (see Resolved decision below). The API serves `/chat` and `/health` on a fully async request path with OpenAPI documentation; next is task 7 (evals), then deploy.
 
 ---
 
@@ -118,6 +118,19 @@ Setup, architecture, deployed URL, sample requests, and the design trade-offs fr
 
 ---
 
-## Open decision
+## Resolved decision
 
-**Account context.** The brief requires answering against the customer's own account data; nothing in the graph does this yet. Deferred to task 6 rather than resolved before task 5 — the nodes were built with no account awareness, so picking it up means a state key, a scope line in the router's system prompt, and a block in `generate`'s grounded prompt. Still undecided: node vs. injected into state from the request payload.
+**Account context — done, as a dedicated node.** `POST /chat` takes an optional
+`account_id` (`MAL-nnnn-nnnn-nnnn`, pattern-validated, documented in OpenAPI
+with the three demo ids); the app sends it in every invoke payload (`""` when
+absent) and the `account` node — second in the graph, after `redact` — resolves
+it against `accounts/`, a new pure package holding three synthetic customers
+built from the KB documents' own worked examples (a Sonnet agent per document
+extracted which fields each product's rules actually reference). Records carry
+customer facts only, never product rules, and `masked_id` instead of the full
+number — the raw id exists only as the store's dict key, so prompts, traces
+(`account_id_masked`) and responses cannot leak it by construction. `generate`
+renders the full record into both its prompts; the router gets one line of
+product names for query rewriting. See CLAUDE.md → Graph and → State. Covered
+by `tests/test_nodes_account.py` plus new cases in the app, graph, answering
+and observability suites; the graph diagram in `docs/` is regenerated.
