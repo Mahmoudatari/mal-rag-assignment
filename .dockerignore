@@ -1,0 +1,17 @@
+# Deny everything, then name what the build needs. The whole context is sent to
+# the daemon before the first COPY runs — .venv alone is 700MB — and this is
+# also what keeps .env out of the image if a COPY line is ever widened.
+*
+!pyproject.toml
+!uv.lock
+!accounts
+!app
+!core
+!kb
+!observability
+!pii
+!rag
+
+# Re-excluded after the directories above: host bytecode is the wrong
+# interpreter's, and uv compiles its own in the builder.
+**/__pycache__

@@ -1,0 +1,16 @@
+# Deploy config in the repo rather than in the dashboard, where it is invisible
+# to review. Railway builds a root Dockerfile on sight; `builder` is stated
+# anyway so a future Railpack default cannot silently build something else.
+
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+# /health is readiness, not liveness: it 503s when the database is unreachable,
+# the index is empty, or part of it was embedded by an unconfigured model. As
+# the healthcheck, that means a deploy which cannot answer a question does not
+# replace one that can.
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
