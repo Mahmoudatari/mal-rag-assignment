@@ -56,7 +56,7 @@ build-backend = "hatchling.build"
 # shipped. This list is exhaustive by necessity: anything missing from it is
 # absent from the wheel and only fails once installed non-editably, because an
 # editable install puts the repo root on sys.path and hides the omission.
-packages = ["core", "app", "kb", "rag", "pii", "observability"]
+packages = ["core", "app", "kb", "rag", "pii", "observability", "accounts"]
 
 [tool.uv.sources]
 en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" }
