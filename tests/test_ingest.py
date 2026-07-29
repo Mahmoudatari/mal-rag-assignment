@@ -12,10 +12,16 @@ the module — and it fails in two opposite directions:
   documents, or match them in a different vector space;
 - too tight, and every deploy re-embeds the whole corpus.
 
-The prune keep-set gets the same attention. It has to include the documents that
-were *skipped*, not just the ones written this run; the version of that line
-which passes every other test in this file deletes four fifths of the index on
-the second deploy.
+The prune keep-set gets the same attention, from both ends. It has to include the
+documents that were *skipped*, not just the ones written this run; the version of
+that line which passes every other test in this file deletes four fifths of the
+index on the second deploy. And it may only be applied at all when the run read
+the shipped corpus — pruning against a `--documents` directory means deleting
+every document that directory does not happen to contain.
+
+That second rule is why the prune tests take the `shipped` fixture: it points
+`ingest.DOCUMENTS_DIR` at the temp corpus, which is what makes that corpus the
+one the index is supposed to mirror.
 """
 
 from __future__ import annotations
@@ -148,6 +154,18 @@ def corpus(tmp_path: Path) -> Path:
             DOCUMENT.format(title=title, name=name), encoding="utf-8"
         )
     return tmp_path
+
+
+@pytest.fixture
+def shipped(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The temp corpus, promoted to *the* corpus.
+
+    Pruning is gated on the run covering `kb/documents/`, so a test about prune
+    behaviour has to say which directory that is — otherwise it would be testing
+    the gate instead of the keep-set.
+    """
+    monkeypatch.setattr(ingest, "DOCUMENTS_DIR", corpus)
+    return corpus
 
 
 @pytest.fixture
@@ -306,31 +324,31 @@ def test_force_re_embeds_everything(corpus, fake_store, embedder) -> None:
 # --- pruning -------------------------------------------------------------
 
 
-def test_prune_keeps_the_documents_that_were_skipped(corpus, fake_store, embedder) -> None:
+def test_prune_keeps_the_documents_that_were_skipped(shipped, fake_store, embedder) -> None:
     """The keep-set is every document in the corpus, not the ones written this
     run. Passing only `report.embedded` passes every other test in this file and
     empties the index on the second deploy."""
-    ingest.ingest(corpus)
+    ingest.ingest(shipped)
 
     fake_store.pruned_keep = None
-    report = ingest.ingest(corpus)
+    report = ingest.ingest(shipped)
 
     assert report.skipped == ["alpha", "beta"]
     assert fake_store.pruned_keep == ["alpha", "beta"]
     assert set(fake_store.indexed) == {"alpha", "beta"}
 
 
-def test_a_deleted_document_is_pruned(corpus, fake_store, embedder) -> None:
-    ingest.ingest(corpus)
-    (corpus / "beta.md").unlink()
+def test_a_deleted_document_is_pruned(shipped, fake_store, embedder) -> None:
+    ingest.ingest(shipped)
+    (shipped / "beta.md").unlink()
 
-    report = ingest.ingest(corpus)
+    report = ingest.ingest(shipped)
 
     assert report.pruned == ["beta"]
     assert set(fake_store.indexed) == {"alpha"}
 
 
-def test_pruning_happens_after_the_writes(corpus, fake_store, embedder, monkeypatch) -> None:
+def test_pruning_happens_after_the_writes(shipped, fake_store, embedder, monkeypatch) -> None:
     """So a run that dies mid-corpus removes nothing — a failed deploy must not
     be able to empty the index."""
     monkeypatch.setattr(
@@ -340,9 +358,38 @@ def test_pruning_happens_after_the_writes(corpus, fake_store, embedder, monkeypa
     )
 
     with pytest.raises(RuntimeError, match="provider is down"):
-        ingest.ingest(corpus)
+        ingest.ingest(shipped)
 
     assert fake_store.pruned_keep is None
+
+
+def test_another_directory_embeds_but_never_prunes(corpus, fake_store, embedder, capsys) -> None:
+    """The destructive typo: `--documents ~/scratch` with DATABASE_URL still on
+    the deployed index. One `.md` file in there is a non-empty keep-set, so
+    `store.prune`'s own refusal lets it through and the five real documents are
+    cascade-deleted along with all 202 chunks. Absence from some other directory
+    is not evidence a document left the corpus, so this run may only add."""
+    fake_store.mark_indexed("murabaha-everyday-finance", chunks=chunks_of(corpus, "alpha"))
+
+    report = ingest.ingest(corpus)
+
+    assert report.embedded == ["alpha", "beta"]
+    assert fake_store.pruned_keep is None
+    assert report.pruned == []
+    assert "murabaha-everyday-finance" in fake_store.indexed
+    assert "pruning    skipped" in capsys.readouterr().out
+
+
+def test_the_default_directory_still_prunes(fake_store, embedder) -> None:
+    """The other half: the gate must not disable pruning outright, or a document
+    deleted from `kb/documents/` would stay in the index forever."""
+    fake_store.mark_indexed("retired-product", chunks=[])
+
+    report = ingest.ingest()
+
+    assert report.pruned == ["retired-product"]
+    assert fake_store.pruned_keep is not None
+    assert "retired-product" not in fake_store.indexed
 
 
 # --- titles --------------------------------------------------------------

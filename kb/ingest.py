@@ -25,7 +25,16 @@ it as possible while never leaving a stale vector in the index.
   being collected: there is nothing to clean up.
 - **Pruning happens after the writes.** A run that dies mid-corpus removes
   nothing, so a failed deploy cannot empty the index. `store.prune` separately
-  refuses an empty keep-set, which covers the wrong-directory typo.
+  refuses an empty keep-set, but that only covers a directory with no `.md`
+  files in it at all.
+- **Pruning is therefore gated on the run covering the shipped corpus.** The
+  keep-set is "every document this run saw", so a run over some *other*
+  directory would delete everything else in the index — and one `README.md` in
+  it is enough to get past the empty-keep-set refusal. `--documents` exists for
+  trying the chunker on other text, which is not a statement about what the
+  index should contain, so only a run over `kb/documents/` prunes. Deleting a
+  document from the real corpus still removes it on the next deploy, which is
+  the case pruning exists for.
 """
 
 from __future__ import annotations
@@ -39,7 +48,7 @@ from core.config import get_settings
 from core.embeddings import EmbeddingClient, embedding_client
 from core.llm import Model, Usage
 from kb import store
-from kb.chunking import Chunk, load_corpus
+from kb.chunking import DOCUMENTS_DIR, Chunk, load_corpus
 
 
 class IngestError(RuntimeError):
@@ -100,6 +109,19 @@ def _title(doc: str, chunks: list[Chunk]) -> str:
     derivable from the chunks, and an empty one makes the row pointless.
     """
     return next((chunk.title for chunk in chunks if chunk.title), doc)
+
+
+def _covers_the_corpus(directory: Path | None) -> bool:
+    """Whether this run's documents *are* the index, which is what licenses a prune.
+
+    The keep-set is derived from whichever directory was handed in, so a run over
+    any other one asks the store to delete every document not in it. `store.prune`
+    refusing an empty keep-set does not catch that: a single stray `.md` file is a
+    non-empty keep-set, and the deploy's five documents go instead. Both sides are
+    resolved, so a relative path, a trailing slash or a symlink to `kb/documents/`
+    still counts as the corpus rather than as some other directory.
+    """
+    return directory is None or Path(directory).resolve() == DOCUMENTS_DIR.resolve()
 
 
 def _checked(client: EmbeddingClient, expected: str) -> EmbeddingClient:
@@ -182,9 +204,19 @@ def ingest(directory: Path | None = None, *, force: bool = False) -> IngestRepor
         report.chunks += len(chunks)
         report.usage = report.usage + embeddings.usage
 
-    report.pruned = store.prune(documents.keys())
-    for doc in report.pruned:
-        print(f"  pruned     {doc}  (no longer in the corpus)")
+    if _covers_the_corpus(directory):
+        report.pruned = store.prune(documents.keys())
+        for doc in report.pruned:
+            print(f"  pruned     {doc}  (no longer in the corpus)")
+    else:
+        # Said out loud rather than silently skipped: the operator asked for an
+        # ingest and got a partial one, and the index now holds documents this
+        # run never looked at.
+        print(
+            f"  pruning    skipped — read {Path(directory).resolve()}, not "
+            f"{DOCUMENTS_DIR}, so absence from it does not mean a document left "
+            "the corpus. Anything already indexed stays."
+        )
 
     report.stats = store.stats()
     print(report.summary())
@@ -217,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         metavar="DIR",
-        help="corpus directory (default: kb/documents/)",
+        help="corpus directory (default: kb/documents/; any other one adds but never prunes)",
     )
     parser.add_argument(
         "--force",
