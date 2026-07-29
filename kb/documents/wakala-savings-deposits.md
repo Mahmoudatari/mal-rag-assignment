@@ -261,7 +261,7 @@ Where the customer remains unsatisfied after Mal's final response, or where 30 w
 
 **Mal Murabaha Financing Terms** — cost-plus sale financing: how Mal buys an asset and sells it to the customer at a disclosed mark-up, and how the fixed instalment profit is calculated. Murabaha receivables are the largest holding in the Mal Sharia-Compliant Investment Pool.
 
-**Mal Ijara Financing Terms** — lease-based financing for property and vehicles, including *ijara muntahia bittamleek* ending in transfer of ownership, rental review mechanics and insurance (*takaful*) obligations. Ijara portfolios are the second-largest pool holding.
+**Mal Ijara Auto Finance Policy** — lease-to-own vehicle financing under *ijara muntahia bittamleek* ending in transfer of ownership, rental review mechanics and insurance (*takaful*) obligations. Ijara portfolios are the second-largest pool holding.
 
 **Mal Sukuk Terms** — Sukuk investment through the Mal app: certificate structures, secondary-market pricing, distribution dates and the risks of holding certificates directly rather than through the Mal Digital Wakala pool.
 
