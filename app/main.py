@@ -55,16 +55,74 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await close_async_pool()
 
 
-app = FastAPI(title="Mal Islamic Finance Assistant", lifespan=lifespan)
+# The OpenAPI document (served at /openapi.json, rendered at /docs) is
+# generated from this metadata plus the schemas' field descriptions — there is
+# no hand-written spec file to drift from the code.
+app = FastAPI(
+    title="Mal Islamic Finance Assistant",
+    version="1.0.0",
+    summary=(
+        "RAG assistant answering Islamic finance questions grounded in Mal's "
+        "Sharia finance knowledge base, plus the customer's own account context."
+    ),
+    description=(
+        "Ask about Mal's five Sharia finance topics — Murabaha everyday finance, "
+        "Ijara auto lease-to-own, fractional Sukuk investing, Wakala savings, and "
+        "the late-payment/charity policy — or about your own holdings by passing "
+        "an `account_id`.\n\n"
+        "**Grounding** — answers cite the knowledge base chunks they draw on via "
+        "inline `[n]` markers plus a structured `references` list. Out-of-scope "
+        "questions are refused; in-scope questions the knowledge base cannot "
+        "answer are handed to support.\n\n"
+        "**Sessions** — omit `session_id` on the first turn and pass the "
+        "returned id back to keep a conversation going; history lives "
+        "server-side. Ids are server-minted; invented ones are rejected.\n\n"
+        "**PII** — customer identifiers in `message` are masked before reaching "
+        "any model, log or trace.\n\n"
+        "**Synthetic data** — all accounts and documents are fictitious. Demo "
+        "account ids: `MAL-1001-2200-4417` (active Murabaha + Wakala savings), "
+        "`MAL-2002-3300-8802` (Ijara lease + Sukuk holdings), "
+        "`MAL-3003-4400-1103` (Murabaha in arrears)."
+    ),
+    openapi_tags=[
+        {"name": "chat", "description": "Stateful conversation with the assistant."},
+        {"name": "health", "description": "Readiness of the service and its index."},
+    ],
+    lifespan=lifespan,
+)
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    tags=["chat"],
+    summary="One turn of a stateful conversation",
+    response_description=(
+        "The assistant's reply with citations, the outcome, and the session id "
+        "to continue with. Refusals and hand-offs are 200s with the outcome "
+        "named, not errors."
+    ),
+    responses={
+        422: {"description": "Validation failure — empty message, or a malformed session_id/account_id."},
+        500: {
+            "description": (
+                "Unexpected failure. The body is deliberately generic; detail "
+                "goes to the trace log, never the response."
+            ),
+            "content": {"application/json": {"example": {"detail": "internal error"}}},
+        },
+    },
+)
 async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     """One turn of a stateful conversation.
 
     `session_id` does double duty: it goes into the invoke payload because no
     node writes it and the trace reads it from final state, and it is the
     checkpointer's `thread_id`, which is what carries history across turns.
+    Minted here when absent; when present the schema has already enforced the
+    minted format, so every thread_id in the checkpointer is 122 bits of
+    server-chosen randomness — a client cannot park a conversation on a
+    guessable id for someone else to walk into.
     `account_id` rides along the same way — the account node resolves it into
     the customer's holdings; absent is sent as "" so the node always has the
     key to read and a turn without an id cannot inherit the previous turn's.
@@ -98,7 +156,23 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     )
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["health"],
+    summary="Readiness of the service and its index",
+    response_description="All checks passing; the index is populated and current.",
+    responses={
+        503: {
+            "model": HealthResponse,
+            "description": (
+                "Degraded — the database is unreachable, the index is empty, or "
+                "part of it was embedded by an unconfigured model. `detail` "
+                "names the failing check."
+            ),
+        },
+    },
+)
 async def health(response: Response) -> HealthResponse:
     """Readiness, not liveness: 200 means a question could be answered now.
 
