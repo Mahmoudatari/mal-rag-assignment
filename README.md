@@ -53,6 +53,15 @@ continues — follow-ups like *"can I settle it early?"* resolve against history
   plus retrieval quality, runnable offline; live variants pin real model
   behaviour.
 
+## Architecture
+
+Everything runs as one container on Railway beside a single Postgres, which
+backs both pgvector retrieval and session state. OpenRouter is the only other
+external service; `kb/ingest` runs at build time, never per request; traces go
+to stdout where the platform's log drain picks them up.
+
+![system components and data flow](docs/system-components.png)
+
 ## How a request flows
 
 The pipeline is a [LangGraph](https://docs.langchain.com/oss/python/langgraph)
@@ -60,7 +69,7 @@ state graph. LangGraph is deliberately **wiring only** — one file
 (`rag/graph.py`) imports it; nodes and state are framework-free functions, and
 its Postgres checkpointer is what gives `/chat` sessions for free.
 
-![request graph](docs/graph.png)
+![RAG graph](docs/rag-graph.png)
 
 | Node | Job |
 |---|---|
