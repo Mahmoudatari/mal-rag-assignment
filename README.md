@@ -50,8 +50,8 @@ continues — follow-ups like *"can I settle it early?"* resolve against history
   route and reason, retrieved chunk ids, relevance scores (cross-encoder and
   cosine), grader verdict, per-node token usage and cost, outcome.
 - **Evals** — the three required suites (grounding, PII redaction, refusal)
-  plus retrieval quality, runnable offline; live variants pin real model
-  behaviour.
+  plus retrieval quality. PII redaction runs offline; the others drive the real
+  graph against real models (`-m live`).
 
 ## Architecture
 
@@ -116,7 +116,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, an
 [OpenRouter](https://openrouter.ai/) API key.
 
 ```bash
-git clone git@github.com:Mahmoudatari/mal-rag-assignment.git
+git clone https://github.com/Mahmoudatari/mal-rag-assignment.git
 cd mal-rag-assignment
 uv sync                                  # installs everything, spaCy model included
 
@@ -147,18 +147,47 @@ Traces appear on stdout, one JSON line per request.
 
 ## Tests and evals
 
+`tests/` proves the wiring with fakes; `evals/` asserts the behaviours the brief
+grades. **Two of the three required evals drive real models**, so they are
+marked `live` and deselected by default — a plain `uv run pytest` is green
+without having run them.
+
+| Eval | Requirement | Runs offline? |
+|---|---|---|
+| `evals/test_pii_redaction.py` | PII redaction correctness | ✅ yes |
+| `evals/test_grounding.py` | Grounding / no hallucination | ❌ `-m live` + built index |
+| `evals/test_refusal.py` | Refusal of out-of-scope queries | ❌ `-m live` |
+| `evals/test_retrieval.py` | Retrieval quality (extra) | ❌ `-m live` + built index |
+| `evals/test_goldens.py` | Guards the eval set itself | ✅ yes |
+
 ```bash
-uv run pytest              # unit tests + evals — offline, no key needed
-uv run pytest tests/       # unit tests only
-uv run pytest evals/       # the assignment's eval suites
-uv run pytest -m live      # opt-in: real OpenRouter + built index, costs money
+# Offline — no key, no database. PII redaction + the goldens guard.
+uv run pytest                      # unit tests + the offline evals
+uv run pytest tests/               # unit tests only
+uv run pytest evals/               # offline evals only
+
+# The full graded set. Needs OPENROUTER_API_KEY and DATABASE_URL pointing at a
+# built index (step 3 of "Run it locally"). Spends real money on every run.
+uv run pytest evals/ -m live
+
+uv run pytest evals/test_refusal.py -m live      # one suite
+uv run pytest -m live                            # every live test, evals included
 ```
 
-`tests/` proves the wiring with fakes; `evals/` asserts the graded behaviours
-(grounding, PII redaction, refusal, retrieval quality). Anything touching a
-real provider is marked `live` and deselected by default. Tests that write to
-a database are marked `db` and take a separate `TEST_DATABASE_URL` so they can
-never touch the deployed index.
+Each live eval skips rather than fails when its prerequisite is missing, so a
+`-m live` run with no key reports skips, not passes — check the summary line.
+Don't run the evals under `pytest -n`: the golden turns are cached per process,
+so parallel workers re-run them and duplicate the spend.
+
+Database tests are separate again: they call `prune()` and `replace_document()`,
+so they take `TEST_DATABASE_URL` and never `DATABASE_URL` — the deployed index is
+one env var away.
+
+```bash
+docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=pg -e POSTGRES_DB=maltest \
+  pgvector/pgvector:pg17
+TEST_DATABASE_URL=postgresql://postgres:pg@localhost:55432/maltest uv run pytest -m db
+```
 
 ## Deploy to Railway
 
