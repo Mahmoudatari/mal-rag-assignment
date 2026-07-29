@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from accounts import product_names
-from core.llm import StructuredOutputError, fast_llm
+from core.llm import LLMError, fast_llm
 from rag.nodes._common import logged, usage_entry
 from rag.state import State
 
@@ -115,16 +115,26 @@ async def run(state: State) -> dict:
 
     try:
         result = await fast_llm().astructured(prompt, RouteDecision, system=SYSTEM, history=history)
-    except StructuredOutputError:
+    except LLMError:
         # The router is on every request, so a raised exception here kills the
         # turn outright. Failing open to retrieve costs at worst one wasted
         # retrieval that the grader catches; refusing or crashing both stonewall
         # a real customer question instead. This is the only node in the graph
-        # that fails open on a structured-output failure.
+        # that fails open on a failed provider call.
+        #
+        # Caught at the layer's base class, not `StructuredOutputError`: the
+        # narrower form missed `EmptyCompletionError`, which is what a 200 with
+        # an `error` object and no choices raises — a real OpenRouter behaviour,
+        # and a 500 on a valid question. Which flavour of unusable reply arrived
+        # is a detail for the trace; the turn should survive all of them.
         return {
             "route": "retrieve",
             "route_reason": "router unavailable — defaulting to retrieve",
             "search_query": query,
+            # No rewrite happened, so the masked turn is the best standalone
+            # question available: unresolved, but still the customer's own words,
+            # which beats leaving grade and reformulate with nothing.
+            "resolved_query": query,
             "tried_queries": [query],
         }
 

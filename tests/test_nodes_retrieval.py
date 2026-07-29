@@ -15,15 +15,19 @@ What is worth defending here, per node:
   reformulate/no_answer loop.
 - **rerank** — the reorder must carry real `chunk_id`s, never the API's echoed
   `document` text (see `tests/test_rerank.py`, same failure mode: a wrong
-  citation that raises nothing). A `RerankError` must fail open to cosine
+  citation that raises nothing). Failure of *any* kind must fall open to cosine
   order rather than fail the turn, since reranking is an ordering optimisation
-  and relevance stays the grader's call.
+  and relevance stays the grader's call — so both halves are pinned here: a
+  `RerankError` (the reply that arrived and was unusable) and an SDK transport
+  error (the outage, which is the likelier one in production).
 """
 
 from __future__ import annotations
 
 import asyncio
 
+import httpx
+import openai
 import pytest
 
 from core.config import Settings
@@ -307,6 +311,39 @@ def test_a_rerank_error_falls_back_to_cosine_order_top_k(monkeypatch: pytest.Mon
     which is the trace's signal that this happened."""
     fake = FakeAsyncOpenAI(
         responses=[{"error": {"message": "no endpoints found for cohere/rerank-v3.5", "code": 404}}]
+    )
+    client = RerankClient("cohere", "rerank-v3.5", api_key="test", async_client=fake)
+    monkeypatch.setattr(rerank, "rerank_client", lambda: client)
+    monkeypatch.setattr(rerank, "get_settings", lambda: Settings(rerank_enabled=True, top_k=2))
+
+    result = asyncio.run(rerank.run(State(query="q", chunks=list(CHUNKS), usage_log=[])))
+
+    assert [c["chunk_id"] for c in result["chunks"]] == [
+        "murabaha-everyday-finance#001",
+        "ijara-vehicle-finance#002",
+    ]
+    assert all("rerank_score" not in c for c in result["chunks"])
+    assert "usage_log" not in result
+
+
+def test_a_transport_failure_falls_back_to_cosine_order_top_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wider half of the same property, and the likelier one live: a rate
+    limit or an outage on `/rerank` reaches the node as an `openai.APIError`
+    subclass, not a `RerankError`. Catching only the latter turned a rerank
+    outage into a 500 on a turn whose candidates were already good enough to
+    answer from — an optional ordering stage gating control flow.
+
+    `RateLimitError` stands in for the whole family: it is an `APIStatusError`,
+    which shares the `APIError` base with `APIConnectionError` and its subclass
+    `APITimeoutError`.
+    """
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/rerank")
+    fake = FakeAsyncOpenAI(
+        error=openai.RateLimitError(
+            "rate limited", response=httpx.Response(429, request=request), body=None
+        )
     )
     client = RerankClient("cohere", "rerank-v3.5", api_key="test", async_client=fake)
     monkeypatch.setattr(rerank, "rerank_client", lambda: client)

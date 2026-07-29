@@ -22,11 +22,21 @@ def response(
     total_tokens: int | None = None,
     cost: float | None = None,
     usage: bool = True,
+    choices: bool = True,
+    error: dict[str, Any] | None = None,
 ) -> SimpleNamespace:
     """Build a minimal chat-completion response.
 
     `usage=False` models a provider that omits the block entirely, and `cost=None`
     one that returns usage without OpenRouter's cost extension.
+
+    `choices=False` plus `error=` is the reply this fake existed without for too
+    long: OpenRouter hands some upstream rejections back as HTTP 200 with an
+    `error` object and no choices, which the SDK does not raise on. The pinned
+    SDK parses that body into a completion whose `.choices` is `None` — not an
+    empty list — so that is what is modelled here. `error` alone (with content
+    `""` or `None`) models the other half: a well-formed reply whose text is
+    empty and whose real cause is in the error object.
     """
     usage_obj = None
     if usage:
@@ -42,8 +52,14 @@ def response(
         usage_obj = SimpleNamespace(**fields)
 
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        choices=(
+            [SimpleNamespace(message=SimpleNamespace(content=content))] if choices else None
+        ),
         usage=usage_obj,
+        # Always present, like the embeddings fake's: `_provider_error` reads it
+        # off every response and a missing attribute would make the absent case
+        # pass for a different reason than the real one does.
+        error=error,
     )
 
 

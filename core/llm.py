@@ -371,7 +371,14 @@ class LLMClient:
             spent = spent + _usage(response)
             try:
                 data = schema.model_validate_json(_strip_fence(self._content(response)))
-            except (ValidationError, ValueError) as exc:
+            # `EmptyCompletionError` is listed explicitly because it is a
+            # `RuntimeError`, so neither of the other two covers it — and a reply
+            # with no choices at all (OpenRouter's 200-with-`error`) is the same
+            # kind of transient failure as a malformed one: worth one more
+            # attempt, and worth reporting as `StructuredOutputError`, which is
+            # the type the router's fail-open is written against. `last_error`
+            # carries the provider's own message into that final raise.
+            except (ValidationError, ValueError, EmptyCompletionError) as exc:
                 last_error = exc
                 continue
             return Structured(data=data, usage=spent, model=str(self.model))
@@ -413,7 +420,10 @@ class LLMClient:
             spent = spent + _usage(response)
             try:
                 data = schema.model_validate_json(_strip_fence(self._content(response)))
-            except (ValidationError, ValueError) as exc:
+            # Same tuple as `structured`, for the same reasons — these two lines
+            # are the pair most worth keeping identical, since the async side is
+            # the one the request path actually runs.
+            except (ValidationError, ValueError, EmptyCompletionError) as exc:
                 last_error = exc
                 continue
             return Structured(data=data, usage=spent, model=str(self.model))
@@ -508,14 +518,23 @@ class LLMClient:
     def _completion(self, response: Any) -> Completion:
         text = self._content(response)
         if not text.strip():
-            raise EmptyCompletionError(f"{self.model} returned an empty completion")
+            raise EmptyCompletionError(
+                f"{self.model} returned an empty completion{_provider_error(response)}"
+            )
         return Completion(text=text, usage=_usage(response), model=str(self.model))
 
     @staticmethod
     def _content(response: Any) -> str:
         choices = getattr(response, "choices", None)
         if not choices:
-            raise EmptyCompletionError("response contained no choices")
+            # A reply with no choices is usually not an empty answer at all: it is
+            # OpenRouter passing an upstream rejection back as HTTP 200 with an
+            # `error` object, which the SDK does not raise on. The suffix is the
+            # only place that message survives — same call the embeddings and
+            # rerank clients make on their own no-payload path.
+            raise EmptyCompletionError(
+                f"response contained no choices{_provider_error(response)}"
+            )
         return getattr(choices[0].message, "content", None) or ""
 
     def __repr__(self) -> str:

@@ -15,6 +15,8 @@ Skipped entirely when `rerank_enabled` is false, in which case `retrieve` should
 return top_k directly.
 """
 
+from openai import APIError
+
 from core.config import get_settings
 from core.rerank import RerankError, rerank_client
 from rag.nodes._common import logged, usage_entry
@@ -37,16 +39,29 @@ async def run(state: State) -> dict:
         result = await rerank_client().arerank(
             query, [chunk["text"] for chunk in chunks], top_n=settings.top_k
         )
-    except RerankError:
-        # OpenRouter surfaces some upstream rejections as HTTP 200 with an
-        # `error` object, which raises here rather than silently returning
-        # nothing. Reranking is an ordering optimisation, not a correctness
-        # gate, so failing the whole turn over it would be the wrong trade —
-        # fail open with the candidates already in cosine order. The missing
-        # `rerank_score` on every chunk is the signal a trace reads to show
-        # this happened. Transport errors (timeouts, 429s, 5xx) are not caught
-        # here: the SDK already retried those, so one reaching this far is
-        # not something a second attempt would fix.
+    except (RerankError, APIError):
+        # Reranking is an ordering optimisation over a candidate set `retrieve`
+        # has already produced in cosine order, and relevance stays the grader's
+        # call — so nothing downstream needs this stage to have run. That makes
+        # every way it can fail equivalent: whatever went wrong, the correct
+        # response is to keep the candidates and truncate them. Failing the turn
+        # would be reranking gating control flow, which is the one thing it must
+        # never do. The missing `rerank_score` on every chunk is the signal a
+        # trace reads to show this happened.
+        #
+        # Two classes, because they arrive by different routes. `RerankError` is
+        # a reply that arrived and was unusable — OpenRouter's 200-with-`error`
+        # shape for some upstream rejections, or an index the response should
+        # not have contained. `openai.APIError` is the SDK's base for the rest:
+        # `APIStatusError` (429, 5xx, 401) and `APIConnectionError`, whose
+        # subclass is `APITimeoutError`, so timeouts are covered by the base and
+        # need no separate arm. The SDK has already spent its own retries by the
+        # time one of these surfaces, but falling open is not a further attempt
+        # — it is skipping a stage the answer does not depend on.
+        #
+        # Deliberately not `except Exception`: a KeyError or TypeError here is a
+        # bug in this module's own projection, and quietly serving cosine order
+        # for it would hide the bug behind slightly worse answers forever.
         return {"chunks": chunks[: settings.top_k]}
 
     # Rebuilt from the caller's own chunk dicts via `scored`, never from the

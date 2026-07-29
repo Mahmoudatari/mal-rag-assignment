@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from core.llm import LLMClient
+from core.llm import EmptyCompletionError, LLMClient
 from rag.nodes import router
 from tests.fakes import FakeAsyncOpenAI, response
 
@@ -150,6 +150,52 @@ def test_structured_output_error_fails_open_to_retrieve(monkeypatch) -> None:
     # available — unresolved, but better than leaving grade and reformulate blank.
     assert result["resolved_query"] == "is it halal?"
     assert set(result) == {"route", "route_reason", "search_query", "resolved_query", "tried_queries"}
+
+
+def test_a_200_with_error_reply_fails_open_to_retrieve(monkeypatch) -> None:
+    """OpenRouter's other failure shape: HTTP 200, an `error` object, no choices.
+
+    The SDK does not raise on it and the reply parses with `choices` as `None`,
+    which used to reach the node as `EmptyCompletionError` — an `LLMError` that
+    was neither retried by the client nor caught here, so the documented
+    fail-open was skipped and a valid customer question got a 500. Queued once
+    and replayed for both attempts, since the fake serves its last response
+    after the queue drains.
+    """
+    llm, fake = fake_client(
+        response(None, choices=False, error={"message": "upstream rate-limited", "code": 429})
+    )
+    monkeypatch.setattr(router, "fast_llm", lambda: llm)
+
+    result = asyncio.run(router.run({"query": "is it halal?", "history": []}))
+
+    assert len(fake.calls) == 2
+    assert result["route"] == "retrieve"
+    assert result["search_query"] == "is it halal?"
+    assert result["tried_queries"] == ["is it halal?"]
+    assert result["resolved_query"] == "is it halal?"
+    assert set(result) == {"route", "route_reason", "search_query", "resolved_query", "tried_queries"}
+
+
+def test_the_fail_open_covers_every_llm_layer_failure_not_only_the_schema_one(monkeypatch) -> None:
+    """Pins the handler being `LLMError` rather than `StructuredOutputError`.
+
+    The test above cannot do it: the client now converts an exhausted
+    200-with-error into `StructuredOutputError`, so it passes under the narrow
+    handler too. This one raises the flavour that used to escape both layers
+    directly, which is the only way the widening is visible from here.
+    """
+
+    class Failing:
+        async def astructured(self, *args, **kwargs):
+            raise EmptyCompletionError("response contained no choices — provider said: down")
+
+    monkeypatch.setattr(router, "fast_llm", Failing)
+
+    result = asyncio.run(router.run({"query": "is it halal?", "history": []}))
+
+    assert result["route"] == "retrieve"
+    assert result["search_query"] == "is it halal?"
 
 
 # --- usage -------------------------------------------------------------

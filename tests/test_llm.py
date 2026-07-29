@@ -407,6 +407,79 @@ def test_json_that_violates_the_schema_is_a_failure_not_a_default() -> None:
         llm.structured("q", Route)
 
 
+# --- OpenRouter's 200-with-`error` reply ---------------------------------
+# One reply shape, both call kinds, so it is tested in one place rather than
+# split across the sections above. OpenRouter answers some upstream rejections
+# with HTTP 200 and an `error` object instead of a status code: the SDK does not
+# raise, `choices` is `None`, and this client is the only thing between the
+# upstream's own diagnosis and a trace that reports "no choices" and no cause.
+
+
+def test_a_provider_error_on_a_200_is_surfaced() -> None:
+    llm, _ = client(
+        response(None, choices=False, error={"message": "upstream rate-limited", "code": 429})
+    )
+    with pytest.raises(EmptyCompletionError, match="upstream rate-limited"):
+        llm.complete("q")
+
+
+def test_an_async_provider_error_on_a_200_is_surfaced() -> None:
+    """The request path is the async one, so it is the half that must not lose it."""
+    llm, _ = async_client(
+        response(None, choices=False, error={"message": "upstream rate-limited", "code": 429})
+    )
+    with pytest.raises(EmptyCompletionError, match="upstream rate-limited"):
+        asyncio.run(llm.acomplete("q"))
+
+
+def test_an_empty_completion_carries_the_provider_message_too() -> None:
+    """Well-formed choices, blank text, and the actual reason sitting in `error`."""
+    llm, _ = client(response("   ", error={"message": "content filtered upstream"}))
+    with pytest.raises(EmptyCompletionError, match="content filtered upstream"):
+        llm.complete("q")
+
+
+def test_structured_retries_a_no_choices_reply_then_succeeds() -> None:
+    """A reply with no choices is a transient failure like a malformed one.
+
+    Before this, it was raised from inside the try block as an `LLMError` the
+    `except` tuple did not cover, so the second attempt was never made.
+    """
+    llm, fake = client(
+        response(None, choices=False, error={"message": "upstream rate-limited"}, prompt_tokens=8),
+        response('{"route": "retrieve", "reason": "ok"}', prompt_tokens=10, completion_tokens=6),
+    )
+    result = llm.structured("q", Route)
+
+    assert result.data.route == "retrieve"
+    assert len(fake.calls) == 2
+    # The failed attempt still billed, exactly as a malformed one does.
+    assert result.usage == Usage(18, 6, 24, 0.0)
+
+
+def test_structured_reports_a_persistent_provider_error_as_a_structured_failure() -> None:
+    """`StructuredOutputError` is the type the router's fail-open is written
+    against, and the upstream's words have to survive into it — that string is
+    what the emitted trace names as the cause."""
+    llm, fake = client(
+        response(None, choices=False, error={"message": "no endpoints found"}),
+        structured_retries=1,
+    )
+    with pytest.raises(StructuredOutputError, match="no endpoints found"):
+        llm.structured("q", Route)
+    assert len(fake.calls) == 2
+
+
+def test_astructured_reports_a_persistent_provider_error_as_a_structured_failure() -> None:
+    llm, fake = async_client(
+        response(None, choices=False, error={"message": "no endpoints found"}),
+        structured_retries=1,
+    )
+    with pytest.raises(StructuredOutputError, match="no endpoints found"):
+        asyncio.run(llm.astructured("q", Route))
+    assert len(fake.calls) == 2
+
+
 def test_structured_carries_the_system_prompt_and_history() -> None:
     llm, fake = client(response('{"route": "answer", "reason": "hi"}'))
     llm.structured(
