@@ -26,6 +26,10 @@ Every factual claim must carry an inline citation marker, e.g. "Murabaha is a \
 cost-plus sale [1]." Use the number of the passage the fact came from — if a \
 sentence draws on more than one passage, cite all of them, e.g. "[1][3]".
 
+The numbers refer ONLY to the passages in this message: never attach a citation \
+to a fact carried over from an earlier turn of the conversation, and if these \
+passages do not support such a fact, say it could not be confirmed from them.
+
 If the passages do not contain a fact the question needs, say plainly that it \
 could not be confirmed from Mal's guides rather than inventing a figure, rate, \
 term or ruling. Never guess at a number or a Sharia judgement that is not in the \
@@ -157,10 +161,19 @@ async def run(state: State) -> dict:
     answer, references = _citations(result.text, chunks)
     entry = usage_entry("generate", result.model, result.usage)
 
+    # The reply keeps its markers; the *history* copy does not. Markers number
+    # this turn's passages, and history is replayed into the next turn's prompt
+    # where the freshly retrieved passages are renumbered [1]..[n] with entirely
+    # different meanings. A model restating an earlier fact carries its stale
+    # marker along, and `_citations` then resolves that number against the new
+    # chunk list — a Reference to an unrelated chunk, which raises nothing and
+    # traces as a genuine citation. Stripping here is enough because nothing
+    # else writes this text back into a prompt. `_MARKER`'s leading `\s*` takes
+    # the preceding space with it, so "a sale [1]." leaves "a sale.".
     return {
         "answer": answer,
         "references": references,
         "outcome": "answered",
-        "history": appended_history(state, query, answer),
+        "history": appended_history(state, query, _MARKER.sub("", answer)),
         "usage_log": logged(state, entry),
     }

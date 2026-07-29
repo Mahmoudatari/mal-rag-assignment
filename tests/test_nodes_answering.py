@@ -229,7 +229,30 @@ def test_history_is_appended_and_capped_at_history_max_messages(monkeypatch) -> 
     assert len(result["history"]) == cap
     assert result["history"][-2] == {"role": "user", "content": "new question"}
     assert result["history"][-1]["role"] == "assistant"
-    assert result["history"][-1]["content"] == result["answer"]
+    # Same text as the reply minus its citation markers — see the test below.
+    assert result["history"][-1]["content"] == "An answer."
+
+
+def test_history_stores_the_answer_without_its_citation_markers(monkeypatch) -> None:
+    """The reply keeps its markers, the history copy does not.
+
+    A marker numbers *this* turn's passages. Replayed into the next turn, whose
+    passages are renumbered with different meanings, a restated fact carries its
+    stale number along and `_citations` resolves it against the new chunk list —
+    a reference to an unrelated chunk that raises nothing and traces as genuine.
+    """
+    llm, fake = fake_client(response("Murabaha is a sale [1]. The fee is fixed [2]."))
+    monkeypatch.setattr(generate, "answer_llm", lambda: llm)
+
+    chunks = [chunk(1), chunk(2)]
+    result = asyncio.run(generate.run({"query": "what is Murabaha?", "chunks": chunks, "history": []}))
+
+    assert result["answer"] == "Murabaha is a sale [1]. The fee is fixed [2]."
+    stored = result["history"][-1]["content"]
+    assert "[1]" not in stored and "[2]" not in stored
+    # The strip takes each marker's preceding space with it, so what is replayed
+    # is prose — not "a sale ." with a gap, and no doubled spaces mid-sentence.
+    assert stored == "Murabaha is a sale. The fee is fixed."
 
 
 def test_history_carries_the_masked_query_not_a_stray_raw_value(monkeypatch) -> None:
